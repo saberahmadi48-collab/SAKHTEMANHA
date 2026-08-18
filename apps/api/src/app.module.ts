@@ -8,6 +8,7 @@ import { CoreModule } from './core/core.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BuildingsModule } from './modules/buildings/buildings.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
+import { ManagementTermsModule } from './modules/management-terms/management-terms.module';
 import { MembersModule } from './modules/members/members.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { UnitsModule } from './modules/units/units.module';
@@ -57,6 +58,9 @@ import { UnitsModule } from './modules/units/units.module';
     UnitsModule,
     InvitationsModule,
     MembersModule,
+    // Last of BM-01: terms depend on buildings existing and on members being
+    // appointable, so it reads naturally after both.
+    ManagementTermsModule,
   ],
   providers: [
     // ThrottlerGuard must be registered as a GLOBAL guard, not merely imported.

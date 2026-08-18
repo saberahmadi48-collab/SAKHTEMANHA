@@ -305,6 +305,23 @@ export const ERRORS = {
   occupantRequired: 'برای این نوع سکونت باید شخص ساکن مشخص شود',
   vacantMustHaveNoOccupant: 'برای سکونت «خالی» نباید شخصی ثبت شود',
 
+  // دوره مدیریت (BM-01 §25، §26 — قانون یکم BM-00)
+  termOverlapsExisting:
+    'بازه این دوره با دوره دیگری از همین ساختمان هم‌پوشانی دارد',
+  termAlreadyActive: 'هم‌اکنون یک دوره مدیریت فعال برای این ساختمان وجود دارد',
+  termNotSchedulable: 'دوره در وضعیت فعلی قابل فعال‌سازی نیست',
+  termAlreadyClosed: 'این دوره پیش‌تر پایان یافته است و قابل تغییر نیست',
+  termClosedNotEditable:
+    'دوره پایان‌یافته ویرایش نمی‌شود؛ برای تغییر مدیریت، دوره تازه‌ای ثبت کنید',
+  termManagerNotMember:
+    'مدیر دوره باید از پیش عضو همین ساختمان باشد',
+  termTerminationReasonRequired: 'برای خاتمه دادن به دوره، ذکر دلیل الزامی است',
+  termCannotStartInPast:
+    'تاریخ شروع دوره نمی‌تواند پیش از دوره پایان‌یافته قبلی باشد',
+  termWindowAlreadyPassed:
+    'بازه این دوره به پایان رسیده است و دیگر قابل فعال‌سازی نیست؛ دوره تازه‌ای ثبت کنید',
+  termChainAlreadyLinked: 'این دوره پیش‌تر جانشین دیگری داشته است',
+
   // عضویت و دعوت‌نامه (BM-01 §33، §34)
   membershipAlreadyExists: 'این شخص با همین نقش از قبل عضو است',
   cannotRemoveLastOrgOwner: 'آخرین مالک سازمان را نمی‌توان حذف کرد',
