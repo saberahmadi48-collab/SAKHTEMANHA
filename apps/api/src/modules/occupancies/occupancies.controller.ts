@@ -20,6 +20,7 @@ import {
   RequirePermissions,
   ScopedTo,
 } from '../../core/authorization/authorization.decorators';
+import { DecideVerificationDto } from '../../core/verification/verification.dto';
 import { OccupanciesService } from './occupancies.service';
 import {
   CreateOccupancyDto,
@@ -152,6 +153,32 @@ export class OccupanciesController {
     @Req() request: Request,
   ): Promise<OccupancyResponse> {
     return this.occupancies.moveOut(
+      scope,
+      occupancyId,
+      dto,
+      requestContext(request),
+    );
+  }
+
+  /**
+   * Records a verification decision — BM-02 §32.
+   *
+   * Same permission split as ownership: VERIFICATION_MANAGE, not
+   * OCCUPANCY_MANAGE. Whoever records that a tenant moved in should not also be
+   * the sole authority confirming the lease is real.
+   */
+  @RequirePermissions(PERMISSIONS.VERIFICATION_MANAGE)
+  @Post(':occupancyId/verification')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'ثبت نتیجه بررسی سکونت' })
+  async verify(
+    @Param('buildingId') _buildingId: string,
+    @Param('occupancyId', ParseUUIDPipe) occupancyId: string,
+    @Body() dto: DecideVerificationDto,
+    @CurrentScope() scope: RequestScope,
+    @Req() request: Request,
+  ): Promise<OccupancyResponse> {
+    return this.occupancies.verify(
       scope,
       occupancyId,
       dto,

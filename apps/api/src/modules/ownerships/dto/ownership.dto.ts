@@ -11,6 +11,8 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
+import type { VerificationSummary } from '../../../core/verification/verification.dto';
+
 /**
  * Request/response shapes for unit-ownership endpoints — BM-01 §18/§19, the
  * API surface of R2 ("record history, never overwrite it").
@@ -272,6 +274,14 @@ export interface OwnershipResponse {
   readonly titleReference: string | null;
   readonly acquiredVia: string | null;
   readonly notes: string | null;
+  /**
+   * Trust level of this claim (BM-02 §31).
+   *
+   * Always present, never conditional: a consumer that has to guess whether a
+   * title was checked will assume it was. BM-03 will read this to decide
+   * whether a claimed owner may be billed as the owner of record.
+   */
+  readonly verification: VerificationSummary;
   readonly createdAt: Date;
 }
 

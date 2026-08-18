@@ -11,11 +11,14 @@ import { ERRORS } from '@bops/i18n';
 import { AuditService } from '../../core/audit/audit.service';
 import { PrismaService } from '../../core/database/prisma.service';
 import { TenantScopedRepository } from '../../core/database/tenant-scoped.repository';
+// Masking lives in core/privacy so every endpoint that returns a person shares
+// ONE implementation — see the file header for why a per-module copy is a leak
+// waiting to happen.
+import { toPersonSummary } from '../../core/privacy/contact-privacy';
 import type { RequestContext } from '../auth/auth.service';
 import type {
   BuildingMemberResponse,
   EndMembershipDto,
-  MemberPersonSummary,
   OrganizationMemberResponse,
   UpdateBuildingMembershipDto,
   UpdateOrganizationMembershipDto,
@@ -472,53 +475,4 @@ function toOrganizationMemberResponse(
   };
 }
 
-/**
- * Maps a Person onto the member-list summary, masking contact details unless
- * the caller holds PERSON_READ_CONTACT (rule 4 in the class docblock).
- *
- * TWO SEPARATE GATES, and both matter: the caller's permission AND the person's
- * own `phoneIsPublic` flag. A resident who opted in to being contactable is
- * visible to other members; one who did not stays masked even from callers who
- * could otherwise see contacts. Consent is not overridden by authority here —
- * the manager tier holds PERSON_READ_CONTACT for the cases where it genuinely
- * must reach someone.
- */
-function toPersonSummary(
-  person: {
-    id: string;
-    firstName: string;
-    lastName: string;
-    displayName: string | null;
-    email: string | null;
-    phoneNumber: string | null;
-    phoneIsPublic: boolean;
-  },
-  canSeeContact: boolean,
-): MemberPersonSummary {
-  const reveal = canSeeContact || person.phoneIsPublic;
 
-  return {
-    personId: person.id,
-    firstName: person.firstName,
-    lastName: person.lastName,
-    displayName: person.displayName,
-    email: reveal ? person.email : maskEmail(person.email),
-    phoneNumber: reveal ? person.phoneNumber : maskPhone(person.phoneNumber),
-    contactMasked: !reveal,
-  };
-}
-
-/** "sara@example.com" -> "s***@example.com". */
-function maskEmail(email: string | null): string | null {
-  if (!email) return null;
-  const at = email.indexOf('@');
-  if (at <= 0) return '***';
-  return `${email.slice(0, 1)}***${email.slice(at)}`;
-}
-
-/** "09121234567" -> "0912***4567". */
-function maskPhone(phone: string | null): string | null {
-  if (!phone) return null;
-  if (phone.length <= 7) return '***';
-  return `${phone.slice(0, 4)}***${phone.slice(-4)}`;
-}

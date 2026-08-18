@@ -143,6 +143,28 @@ enum OccupancyKind {
   VACANT
 }
 
+/// Trust level of a claimed relationship (BM-02 §31/§32).
+///
+/// This is deliberately NOT a boolean. "Nobody has looked at this yet"
+/// (UNVERIFIED) and "a manager looked and said no" (REJECTED) are different
+/// facts with different consequences, and collapsing them loses the reviewer's
+/// decision. BM-02 defines the state model only — the legal verification engine
+/// (registry integration, document OCR) is explicitly out of scope.
+enum VerificationStatus {
+  /// Recorded but never reviewed. The default for anything a manager types in.
+  UNVERIFIED
+  /// The claimant submitted evidence and is waiting for a reviewer.
+  PENDING
+  /// A reviewer with VERIFICATION_MANAGE accepted the claim.
+  VERIFIED
+  /// A reviewer rejected the claim. The relationship row still EXISTS (R2) —
+  /// rejection is a judgement about proof, never a delete.
+  REJECTED
+  /// Was VERIFIED but the evidence lapsed (e.g. lease ended). Distinct from
+  /// REJECTED because it implies re-verification, not dispute.
+  EXPIRED
+}
+
 enum ManagementTermStatus {
   /// Created but not yet begun (e.g. elected, takes office next month).
   SCHEDULED
@@ -625,6 +647,8 @@ model Person {
   occupancies             UnitOccupancy[]
   managedTerms            ManagementTerm[]         @relation("ManagedTerms")
   invitations             Invitation[]             @relation("InvitedPerson")
+  verifiedOwnerships      UnitOwnership[]          @relation("OwnershipVerifier")
+  verifiedOccupancies     UnitOccupancy[]          @relation("OccupancyVerifier")
 
   @@index([lastName, firstName])
   @@index([nationalId])
@@ -762,12 +786,24 @@ model UnitOwnership {
   acquiredVia    String?
   notes          String?
 
+  /// BM-02 §31. A title claim is recorded first and trusted second: charges and
+  /// governance may need the row long before anyone checks the deed, so this
+  /// gates TRUST, never existence.
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  verifiedAt         DateTime?
+  /// The reviewer who decided. Kept even after they leave (R2) — an audit trail
+  /// that forgets who approved something is not an audit trail.
+  verifiedByPersonId String?            @db.Uuid
+  /// Reviewer's reason, required by the service when status = REJECTED.
+  verificationNote   String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  building Building @relation(fields: [buildingId], references: [id])
-  unit     Unit     @relation(fields: [unitId], references: [id])
-  person   Person   @relation(fields: [personId], references: [id])
+  building         Building @relation(fields: [buildingId], references: [id])
+  unit             Unit     @relation(fields: [unitId], references: [id])
+  person           Person   @relation(fields: [personId], references: [id])
+  verifiedByPerson Person?  @relation("OwnershipVerifier", fields: [verifiedByPersonId], references: [id])
 
   /// Overlapping periods for the same (unit, person) are rejected by a Postgres
   /// EXCLUDE constraint using btree_gist — Prisma cannot express it, so it is
@@ -776,6 +812,7 @@ model UnitOwnership {
   @@index([buildingId, periodStart])
   @@index([unitId, periodStart, periodEnd])
   @@index([personId])
+  @@index([buildingId, verificationStatus])
   @@map("unit_ownerships")
 }
 
@@ -809,12 +846,20 @@ model UnitOccupancy {
 
   notes String?
 
+  /// BM-02 §32. Same rule as ownership: the occupancy is recorded immediately
+  /// (the resident needs access) and verified separately.
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  verifiedAt         DateTime?
+  verifiedByPersonId String?            @db.Uuid
+  verificationNote   String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  building Building @relation(fields: [buildingId], references: [id])
-  unit     Unit     @relation(fields: [unitId], references: [id])
-  person   Person?  @relation(fields: [personId], references: [id])
+  building         Building @relation(fields: [buildingId], references: [id])
+  unit             Unit     @relation(fields: [unitId], references: [id])
+  person           Person?  @relation(fields: [personId], references: [id])
+  verifiedByPerson Person?  @relation("OccupancyVerifier", fields: [verifiedByPersonId], references: [id])
 
   /// A unit cannot have two overlapping occupancy periods at all (unlike
   /// ownership, which may be jointly held). Enforced by an EXCLUDE constraint
@@ -822,6 +867,7 @@ model UnitOccupancy {
   @@index([buildingId, periodStart])
   @@index([unitId, periodStart, periodEnd])
   @@index([personId])
+  @@index([buildingId, verificationStatus])
   @@map("unit_occupancies")
 }
 

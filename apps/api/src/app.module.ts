@@ -13,6 +13,7 @@ import { MembersModule } from './modules/members/members.module';
 import { OccupanciesModule } from './modules/occupancies/occupancies.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { OwnershipsModule } from './modules/ownerships/ownerships.module';
+import { ProfileModule } from './modules/profile/profile.module';
 import { UnitsModule } from './modules/units/units.module';
 
 /**
@@ -69,6 +70,11 @@ import { UnitsModule } from './modules/units/units.module';
     // charges follow title, consumption charges follow the occupant.
     OwnershipsModule,
     OccupanciesModule,
+
+    // BM-02 §41. Listed last but depends on nothing above: profile routes carry
+    // no tenant scope at all, so their position here is cosmetic rather than
+    // load-bearing.
+    ProfileModule,
   ],
   providers: [
     // ThrottlerGuard must be registered as a GLOBAL guard, not merely imported.

@@ -4,13 +4,23 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, type OccupancyKind, type Person } from '@prisma/client';
+import {
+  Prisma,
+  type OccupancyKind,
+  type Person,
+  type VerificationStatus,
+} from '@prisma/client';
 import type { RequestScope } from '@bops/contracts';
 import { ERRORS } from '@bops/i18n';
 
 import { AuditService } from '../../core/audit/audit.service';
 import { PrismaService } from '../../core/database/prisma.service';
 import { TenantScopedRepository } from '../../core/database/tenant-scoped.repository';
+import type { DecideVerificationDto } from '../../core/verification/verification.dto';
+import {
+  decideVerification,
+  toVerificationSummary,
+} from '../../core/verification/verification.rules';
 import type { RequestContext } from '../auth/auth.service';
 import type {
   CreateOccupancyDto,
@@ -378,6 +388,46 @@ export class OccupanciesService extends TenantScopedRepository {
     };
   }
 
+  /**
+   * Records a reviewer's decision about a claimed occupancy — BM-02 §32.
+   *
+   * Identical in shape to the ownership flow and deliberately so: the same
+   * `decideVerification` rules apply, so "verified" cannot come to mean
+   * something weaker on one relationship than the other.
+   *
+   * A VACANT period has no `personId`, so the self-verification check simply
+   * does not apply to it — a manager asserting their building has an empty flat
+   * is not attesting to anything about themselves.
+   */
+  async verify(
+    scope: RequestScope,
+    occupancyId: string,
+    dto: DecideVerificationDto,
+    context: RequestContext,
+  ): Promise<OccupancyResponse> {
+    const before = await this.loadRow(scope, occupancyId);
+
+    const patch = decideVerification(before, dto, scope.personId);
+
+    const updated = await this.prisma.unitOccupancy.update({
+      where: { id: before.id },
+      data: patch,
+      include: { person: true, unit: { select: { label: true } } },
+    });
+
+    await this.audit.log(scope, {
+      action: `occupancy.verification.${dto.status.toLowerCase()}`,
+      resourceType: 'UnitOccupancy',
+      resourceId: updated.id,
+      before,
+      after: updated,
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+    });
+
+    return toResponse(updated);
+  }
+
   // -------------------------------------------------------------------------
   //  internals
   // -------------------------------------------------------------------------
@@ -513,6 +563,11 @@ type OccupancyRow = {
   leaseReference: string | null;
   leaseStartsAt: Date | null;
   leaseEndsAt: Date | null;
+  personId: string | null;
+  verificationStatus: VerificationStatus;
+  verifiedAt: Date | null;
+  verifiedByPersonId: string | null;
+  verificationNote: string | null;
   notes: string | null;
   createdAt: Date;
   person: Person | null;
@@ -544,6 +599,7 @@ function toResponse(row: OccupancyRow): OccupancyResponse {
     leaseStartsAt: row.leaseStartsAt,
     leaseEndsAt: row.leaseEndsAt,
     notes: row.notes,
+    verification: toVerificationSummary(row),
     createdAt: row.createdAt,
   };
 }

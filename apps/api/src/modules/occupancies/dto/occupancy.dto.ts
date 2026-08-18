@@ -12,6 +12,8 @@ import {
 import { Transform, Type } from 'class-transformer';
 import { OccupancyKind } from '@prisma/client';
 
+import type { VerificationSummary } from '../../../core/verification/verification.dto';
+
 /**
  * Request/response shapes for unit-occupancy endpoints — BM-01 §20.
  *
@@ -267,6 +269,14 @@ export interface OccupancyResponse {
   readonly leaseStartsAt: Date | null;
   readonly leaseEndsAt: Date | null;
   readonly notes: string | null;
+  /**
+   * Trust level of this claim (BM-02 §32).
+   *
+   * Matters more here than it looks: a TENANT occupancy nobody verified is the
+   * usual way a stranger ends up on a resident list, and BM-06 will read this
+   * before granting voting eligibility.
+   */
+  readonly verification: VerificationSummary;
   readonly createdAt: Date;
 }
 

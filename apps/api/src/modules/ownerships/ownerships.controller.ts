@@ -20,6 +20,7 @@ import {
   RequirePermissions,
   ScopedTo,
 } from '../../core/authorization/authorization.decorators';
+import { DecideVerificationDto } from '../../core/verification/verification.dto';
 import { OwnershipsService } from './ownerships.service';
 import {
   CloseOwnershipDto,
@@ -133,6 +134,32 @@ export class OwnershipsController {
     @Req() request: Request,
   ): Promise<OwnershipResponse> {
     return this.ownerships.update(scope, ownershipId, dto, requestContext(request));
+  }
+
+  /**
+   * Records a verification decision — BM-02 §31.
+   *
+   * VERIFICATION_MANAGE rather than OWNERSHIP_MANAGE, and the matrix withholds
+   * it from AUDITOR and BOARD_MEMBER: recording a sale and attesting that it is
+   * genuine are different acts, and the same hand should not do both.
+   */
+  @RequirePermissions(PERMISSIONS.VERIFICATION_MANAGE)
+  @Post(':ownershipId/verification')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'ثبت نتیجه بررسی مالکیت' })
+  async verify(
+    @Param('buildingId') _buildingId: string,
+    @Param('ownershipId', ParseUUIDPipe) ownershipId: string,
+    @Body() dto: DecideVerificationDto,
+    @CurrentScope() scope: RequestScope,
+    @Req() request: Request,
+  ): Promise<OwnershipResponse> {
+    return this.ownerships.verify(
+      scope,
+      ownershipId,
+      dto,
+      requestContext(request),
+    );
   }
 
   /** Ends an open period — the nearest thing to a delete, and deliberately not one. */

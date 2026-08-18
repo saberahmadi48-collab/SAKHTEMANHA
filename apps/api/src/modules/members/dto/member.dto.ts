@@ -6,6 +6,8 @@ import {
   OrganizationRole,
 } from '@prisma/client';
 
+import type { PersonSummary } from '../../../core/privacy/contact-privacy';
+
 /**
  * Request/response shapes for the membership endpoints (BM-01 §33, BM-00 rule 8).
  *
@@ -74,17 +76,12 @@ export class EndMembershipDto {
  * carries whatever it decided, which is why the fields are nullable rather than
  * conditionally present — a client rendering `null` shows "ثبت نشده", while a
  * missing key would silently render `undefined`.
+ *
+ * Aliased to the shared `PersonSummary` rather than redeclared: two structurally
+ * identical person shapes drift the moment one gains a field, and the one that
+ * drifts is usually the one that forgets to mask it.
  */
-export interface MemberPersonSummary {
-  readonly personId: string;
-  readonly firstName: string;
-  readonly lastName: string;
-  readonly displayName: string | null;
-  readonly email: string | null;
-  readonly phoneNumber: string | null;
-  /** True when the values above are masked, so the UI can say so honestly. */
-  readonly contactMasked: boolean;
-}
+export type MemberPersonSummary = PersonSummary;
 
 /** One building membership row. */
 export interface BuildingMemberResponse {

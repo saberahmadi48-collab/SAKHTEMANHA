@@ -40,6 +40,22 @@ export const PERMISSIONS = {
   OWNERSHIP_MANAGE: 'ownership:manage',
   OCCUPANCY_READ: 'occupancy:read',
   OCCUPANCY_MANAGE: 'occupancy:manage',
+  /**
+   * Decide whether a claimed ownership/occupancy is true (BM-02 §31/§32).
+   *
+   * Deliberately SEPARATE from OWNERSHIP_MANAGE: recording "flat 12 was sold to
+   * X" is data entry, whereas attesting that the deed was seen is a statement of
+   * trust that later phases (voting weight, legal notices) rely on. Whoever can
+   * type a claim must not be able to bless their own claim.
+   */
+  VERIFICATION_MANAGE: 'verification:manage',
+  /**
+   * Approve or reject a request to join a building (BM-02 §30).
+   *
+   * A building name alone is never authorization — someone with this permission
+   * must affirmatively let the requester in.
+   */
+  JOIN_REQUEST_REVIEW: 'join_request:review',
 
   // --- BM-03/BM-04: finance (declared now so roles stay stable) ------------
   LEDGER_READ: 'ledger:read',
@@ -135,6 +151,8 @@ export const BUILDING_ROLE_PERMISSIONS: Readonly<
     P.OWNERSHIP_MANAGE,
     P.OCCUPANCY_READ,
     P.OCCUPANCY_MANAGE,
+    P.VERIFICATION_MANAGE,
+    P.JOIN_REQUEST_REVIEW,
     P.LEDGER_READ,
     P.CHARGE_READ,
     P.CHARGE_CREATE,
@@ -156,6 +174,10 @@ export const BUILDING_ROLE_PERMISSIONS: Readonly<
     P.MEMBER_READ,
     P.OWNERSHIP_READ,
     P.OCCUPANCY_READ,
+    // The board reviews join requests but does NOT attest to deeds: verification
+    // is the manager's operational duty, and splitting it keeps a single board
+    // member from admitting themselves and then blessing their own title.
+    P.JOIN_REQUEST_REVIEW,
     P.LEDGER_READ,
     P.CHARGE_READ,
     P.INVOICE_READ,

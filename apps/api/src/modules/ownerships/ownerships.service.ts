@@ -4,13 +4,22 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, type Person } from '@prisma/client';
+import {
+  Prisma,
+  type Person,
+  type VerificationStatus,
+} from '@prisma/client';
 import type { RequestScope } from '@bops/contracts';
 import { ERRORS } from '@bops/i18n';
 
 import { AuditService } from '../../core/audit/audit.service';
 import { PrismaService } from '../../core/database/prisma.service';
 import { TenantScopedRepository } from '../../core/database/tenant-scoped.repository';
+import type { DecideVerificationDto } from '../../core/verification/verification.dto';
+import {
+  decideVerification,
+  toVerificationSummary,
+} from '../../core/verification/verification.rules';
 import type { RequestContext } from '../auth/auth.service';
 import type {
   CloseOwnershipDto,
@@ -399,6 +408,52 @@ export class OwnershipsService extends TenantScopedRepository {
     };
   }
 
+  /**
+   * Records a reviewer's decision about a claimed title — BM-02 §31.
+   *
+   * SEPARATE FROM `update` AND GATED ON A DIFFERENT PERMISSION
+   * (VERIFICATION_MANAGE, not OWNERSHIP_MANAGE) because they are different acts:
+   * `update` corrects what the record SAYS, this attests that it is TRUE. The
+   * split means the clerk who types in a sale cannot also bless it.
+   *
+   * Unlike `update`, this is allowed on CLOSED periods. A deed produced after
+   * the owner moved out still settles who held title back then, and refusing to
+   * record that would freeze exactly the historical question R2 exists to keep
+   * answerable.
+   */
+  async verify(
+    scope: RequestScope,
+    ownershipId: string,
+    dto: DecideVerificationDto,
+    context: RequestContext,
+  ): Promise<OwnershipResponse> {
+    const before = await this.loadRow(scope, ownershipId);
+
+    // The reviewer comes from the proven scope, never from the body — see the
+    // verification DTO header.
+    const patch = decideVerification(before, dto, scope.personId);
+
+    const updated = await this.prisma.unitOwnership.update({
+      where: { id: before.id },
+      data: patch,
+      include: { person: true, unit: { select: { label: true } } },
+    });
+
+    await this.audit.log(scope, {
+      // The action carries the decision so the trail is readable without
+      // diffing snapshots — "who approved this" is the first question asked.
+      action: `ownership.verification.${dto.status.toLowerCase()}`,
+      resourceType: 'UnitOwnership',
+      resourceId: updated.id,
+      before,
+      after: updated,
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+    });
+
+    return toResponse(updated);
+  }
+
   // -------------------------------------------------------------------------
   //  internals
   // -------------------------------------------------------------------------
@@ -524,6 +579,16 @@ export class OwnershipsService extends TenantScopedRepository {
    * it catches the interleaving that two concurrent requests slip through the
    * read-then-write checks with. Without this translation the loser of that
    * race sees an opaque 500.
+   *
+   * TWO DIFFERENT CONSTRAINTS CAN FIRE, AND WHICH ONE WINS IS NOT UP TO US.
+   * Measured, not assumed: when two clients open a title on the same unit at
+   * once, both ask to be primary, so the partial unique index
+   * `unit_ownerships_single_primary_current` (a P2002 on `unitId`) frequently
+   * rejects the loser BEFORE the overlap EXCLUDE (23P01) is ever evaluated.
+   * Both are the same event to a user — "someone else just wrote this unit" —
+   * so both must become a Persian 409. Translating only the EXCLUDE left the
+   * loser of an ordinary double-click with a raw 500; the concurrency e2e test
+   * caught it, reasoning did not.
    */
   private async withConflictTranslation<T>(run: () => Promise<T>): Promise<T> {
     try {
@@ -531,6 +596,9 @@ export class OwnershipsService extends TenantScopedRepository {
     } catch (error) {
       if (isOwnershipOverlapViolation(error)) {
         throw new ConflictException(ERRORS.ownershipPeriodOverlap);
+      }
+      if (isPrimaryOwnerCollision(error)) {
+        throw new ConflictException(ERRORS.ownershipConcurrentWrite);
       }
       throw error;
     }
@@ -552,6 +620,11 @@ type OwnershipRow = {
   createdAt: Date;
   person: Person;
   unit: { label: string | null };
+  personId: string;
+  verificationStatus: VerificationStatus;
+  verifiedAt: Date | null;
+  verifiedByPersonId: string | null;
+  verificationNote: string | null;
 };
 
 /**
@@ -581,6 +654,7 @@ function toResponse(row: OwnershipRow): OwnershipResponse {
     titleReference: row.titleReference,
     acquiredVia: row.acquiredVia,
     notes: row.notes,
+    verification: toVerificationSummary(row),
     createdAt: row.createdAt,
   };
 }
@@ -618,4 +692,31 @@ function isOwnershipOverlapViolation(error: unknown): boolean {
     text.includes('unit_ownerships_no_overlap') ||
     (text.includes('23P01') && text.includes('unit_ownerships'))
   );
+}
+
+/**
+ * True for the unique-index rejection raised by
+ * `unit_ownerships_single_primary_current` — "one primary owner per unit".
+ *
+ * Reachable ONLY under concurrency: `demoteOtherPrimaries` clears the incumbent
+ * first, so a serial request never trips this. Two simultaneous transactions
+ * both demote what they can see and both insert a primary row, and the index
+ * rejects the one that commits second.
+ *
+ * Matched on Prisma's structured `code`/`meta` rather than message text, because
+ * the message wording varies by driver version while P2002 is stable. The target
+ * check keeps an unrelated unique violation from being reported as a race.
+ */
+function isPrimaryOwnerCollision(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code !== 'P2002') return false;
+
+  const target = (error.meta as { target?: unknown } | undefined)?.target;
+  const fields = Array.isArray(target)
+    ? target.map(String)
+    : typeof target === 'string'
+      ? [target]
+      : [];
+
+  return fields.some((field) => field.includes('unitId'));
 }

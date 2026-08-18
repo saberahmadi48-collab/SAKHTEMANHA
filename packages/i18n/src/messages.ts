@@ -319,6 +319,8 @@ export const ERRORS = {
   ownershipSharePositive: 'سهم مالکیت باید بزرگ‌تر از صفر و حداکثر ۱۰۰ باشد',
   primaryOwnerRequired:
     'هر واحد باید در هر لحظه یک مالک اصلی داشته باشد',
+  ownershipConcurrentWrite:
+    'هم‌زمان مالکیت دیگری برای این واحد ثبت شد؛ فهرست را تازه کنید و دوباره تلاش کنید',
 
   // دوره مدیریت (BM-01 §25، §26 — قانون یکم BM-00)
   termOverlapsExisting:
@@ -346,6 +348,19 @@ export const ERRORS = {
   invitationNotPending: 'این دعوت‌نامه در وضعیت قابل تغییر نیست',
   personProfileRequired:
     'برای این کار باید ابتدا مشخصات فردی خود را تکمیل کنید',
+
+  // تأیید مالکیت و سکونت (BM-02 §31، §32)
+  verificationAlreadyDecided:
+    'برای این رابطه پیش‌تر تصمیم تأیید ثبت شده است؛ ابتدا آن را به بازبینی برگردانید',
+  verificationReasonRequired: 'برای رد کردن، ذکر دلیل الزامی است',
+  cannotVerifyOwnRecord: 'تأیید رابطه‌ای که خودتان در آن هستید مجاز نیست',
+  verificationNotPending: 'این رابطه در انتظار بازبینی نیست',
+
+  // پروفایل شخصی (BM-02 §41)
+  profileNotFound: 'مشخصات فردی برای این حساب ثبت نشده است',
+  nationalIdAlreadyUsed: 'این کد ملی پیش‌تر برای شخص دیگری ثبت شده است',
+  sensitiveFieldLocked:
+    'این اطلاعات پس از تأیید فقط توسط مدیر ساختمان قابل تغییر است',
 } as const;
 
 /** متن حالت‌های خالی. */
