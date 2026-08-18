@@ -244,6 +244,114 @@ enum ChargeCycle {
   ANNUAL
 }
 
+// ---------------------------------------------------------------------------
+//  BM-03 — FINANCE ENUMS
+// ---------------------------------------------------------------------------
+
+/// BM-03 §9. A period is the unit of financial closure, not just a date filter:
+/// once CLOSED, writes that carry a financial effect into it are refused, and
+/// corrections must be made as new entries in an open period (§10/§46).
+enum FinancialPeriodStatus {
+  OPEN
+  /// Reconciliation in progress: charge generation is barred but corrections
+  /// are still accepted, so a period can be balanced before it is sealed.
+  CLOSING
+  CLOSED
+  /// Deliberately distinct from OPEN. A period that was sealed and later
+  /// reopened must stay visibly different forever — an auditor has to be able
+  /// to ask why (§10 requires elevated permission plus audit).
+  REOPENED
+}
+
+/// BM-03 §11.
+enum ChargeType {
+  REGULAR
+  EXTRAORDINARY
+  UTILITY
+  REPAIR
+  PENALTY
+  CREDIT
+  OTHER
+}
+
+/// BM-03 §12. The formula is configuration, never a branch in controller code —
+/// adding a method here is a deliberate, reviewable act.
+enum ChargeCalculationMethod {
+  FIXED
+  AREA_BASED
+  FIXED_PLUS_AREA
+  PER_PERSON
+  /// Interface only in BM-03 (§17): meter/reading management arrives later.
+  CONSUMPTION_BASED
+  CUSTOM
+}
+
+enum ChargeRuleStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+/// BM-03 §11/§24. A charge is an obligation; it is never deleted, only
+/// superseded or reversed (R2).
+enum ChargeStatus {
+  DRAFT
+  ISSUED
+  INVOICED
+  CANCELLED
+  REVERSED
+}
+
+/// BM-03 §24.
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+  REVERSED
+  REFUNDED
+}
+
+/// BM-03 §7/§8. Direction of a ledger entry. Every financial event states its
+/// effect explicitly — there is no `balance += amount` anywhere in this domain.
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+/// What produced a ledger entry. An enum rather than a free string so a
+/// reversal can always find the entry it reverses (§46).
+enum LedgerReferenceType {
+  CHARGE
+  INVOICE
+  PAYMENT
+  ADJUSTMENT
+  REFUND
+  CREDIT_APPLICATION
+  OPENING_BALANCE
+  REVERSAL
+}
+
+/// BM-03 §27. Credit is money the unit has already paid that no invoice has
+/// consumed yet — it must never silently vanish (§26).
+enum CreditStatus {
+  AVAILABLE
+  PARTIALLY_APPLIED
+  APPLIED
+  REFUNDED
+  EXPIRED
+}
+
+/// BM-03 §5/§6. A financial account can be frozen without being destroyed.
+enum FinancialAccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
 // ============================================================================
 //  BM-01 — ORGANIZATION / BUILDING / UNIT / ADDRESS / LOCATION / TERM
 // ============================================================================
@@ -389,6 +497,17 @@ model Building {
   occupancies     UnitOccupancy[]
   invitations     Invitation[]
 
+  // BM-03 finance
+  financialAccount     BuildingFinancialAccount?
+  unitFinancialAccounts UnitFinancialAccount[]
+  financialPeriods     FinancialPeriod[]
+  chargeRules          ChargeRule[]
+  chargeRuns           ChargeRun[]
+  charges              Charge[]
+  invoices             Invoice[]
+  ledgerEntries        LedgerEntry[]
+  unitCredits          UnitCredit[]
+
   /// Code is unique per organization, not globally: two management companies
   /// may both use "A1".
   @@unique([organizationId, code])
@@ -474,6 +593,13 @@ model Unit {
   occupancies UnitOccupancy[]
   memberships UnitMembership[]
   invitations Invitation[]
+
+  // BM-03 finance
+  financialAccount UnitFinancialAccount?
+  charges          Charge[]
+  invoices         Invoice[]
+  ledgerEntries    LedgerEntry[]
+  credits          UnitCredit[]
 
   @@unique([buildingId, label])
   @@index([buildingId, status])
@@ -649,6 +775,13 @@ model Person {
   invitations             Invitation[]             @relation("InvitedPerson")
   verifiedOwnerships      UnitOwnership[]          @relation("OwnershipVerifier")
   verifiedOccupancies     UnitOccupancy[]          @relation("OccupancyVerifier")
+
+  // BM-03 finance — who closed a period, ran generation, wrote a ledger entry.
+  // Kept even after the person leaves (R2): an audit trail that forgets who
+  // sealed the books is not an audit trail.
+  closedPeriods       FinancialPeriod[] @relation("PeriodClosedBy")
+  startedChargeRuns   ChargeRun[]       @relation("ChargeRunStartedBy")
+  createdLedgerEntries LedgerEntry[]    @relation("LedgerCreatedBy")
 
   @@index([lastName, firstName])
   @@index([nationalId])
@@ -958,4 +1091,478 @@ model AuditLog {
   @@index([resourceType, resourceId])
   @@index([actorUserId, createdAt])
   @@map("audit_logs")
+}
+
+// ============================================================================
+//  BM-03 — FINANCE: ACCOUNTS / PERIODS / RULES / CHARGES / INVOICES / LEDGER
+//
+//  Two conventions apply to every table below and are load-bearing:
+//
+//  MONEY IS ALWAYS Decimal(18,2), NEVER Float. A float cannot represent 0.1
+//  exactly, so a ledger built on floats fails to balance after enough entries.
+//  Postgres numeric is exact; the service layer converts with Number() only at
+//  the JSON boundary (Prisma.Decimal serialises as {s,e,d} otherwise).
+//
+//  AMOUNTS ARE STORED IN THE SMALLEST SENSIBLE UNIT OF THE BUILDING'S CURRENCY
+//  as configured on the account, not assumed to be Rial. BM-03 §5 requires a
+//  currency per account precisely so a future building can differ.
+// ============================================================================
+
+/// BM-03 §5. The financial context of a building. Its existence — not a nullable
+/// column somewhere — is what makes a building "financially live".
+///
+/// A building must never share a ledger with another building (§5, §64): this
+/// row is the anchor every other finance table hangs off, and it is why cross-
+/// building financial reads are a schema violation rather than a missing filter.
+model BuildingFinancialAccount {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @unique @db.Uuid
+
+  /// ISO-4217. Defaults to Iranian Rial but is explicit per §5.
+  currency String                 @default("IRR")
+  status   FinancialAccountStatus @default(ACTIVE)
+
+  /// Jalali fiscal year this account currently operates in (e.g. 1404).
+  fiscalYear Int
+
+  /// Opening position carried in when the building was onboarded onto the
+  /// platform mid-life. Recorded as an OPENING_BALANCE ledger entry too — this
+  /// column is a convenience mirror, never the source of truth (§7).
+  openingBalance Decimal @default(0) @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+
+  @@map("building_financial_accounts")
+}
+
+/// BM-03 §6. The financial view of a unit — explicitly NOT the resident's bank
+/// account, and not a balance column either: the balance is derived from ledger
+/// entries (§7/§28). This row exists to say "this unit participates financially"
+/// and to hold its currency and status.
+model UnitFinancialAccount {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+  unitId     String @unique @db.Uuid
+
+  currency String                 @default("IRR")
+  status   FinancialAccountStatus @default(ACTIVE)
+
+  /// Balance the unit carried in at onboarding. Positive = the unit owes.
+  openingBalance Decimal @default(0) @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  unit     Unit     @relation(fields: [unitId], references: [id])
+
+  @@index([buildingId, status])
+  @@map("unit_financial_accounts")
+}
+
+/// BM-03 §9. The accounting month (or quarter/year — see BuildingSettings
+/// .chargeCycle). Every charge, invoice and ledger entry belongs to exactly one.
+///
+/// WHY A ROW AND NOT A DERIVED DATE RANGE: a period has STATE. "Closed" is a
+/// fact someone asserted at a moment, with a name attached (§59), and closing is
+/// what makes historical numbers stop moving. A computed range cannot be closed.
+model FinancialPeriod {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+
+  /// Jalali year and month (1-12). Stored as integers rather than a date so the
+  /// natural key "1404-07" is exact — Gregorian conversion at the edges of a
+  /// Jalali month is a rounding argument nobody should have with the ledger.
+  year  Int
+  month Int
+
+  /// Absolute instants the period covers, half-open [startsAt, endsAt).
+  /// Timestamptz for the same reason as every other temporal column here.
+  startsAt DateTime @db.Timestamptz(6)
+  endsAt   DateTime @db.Timestamptz(6)
+
+  status FinancialPeriodStatus @default(OPEN)
+
+  closedAt         DateTime?
+  closedByPersonId String?   @db.Uuid
+  /// Required by the service when a CLOSED period is reopened (§10).
+  reopenedAt       DateTime?
+  reopenReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building       Building        @relation(fields: [buildingId], references: [id])
+  closedByPerson Person?         @relation("PeriodClosedBy", fields: [closedByPersonId], references: [id])
+  chargeRuns     ChargeRun[]
+  charges        Charge[]
+  invoices       Invoice[]
+  ledgerEntries  LedgerEntry[]
+
+  /// One period per (building, year, month). Total unique is correct here
+  /// (unlike the BM-02 membership indexes): a month genuinely happens once.
+  @@unique([buildingId, year, month])
+  @@index([buildingId, status])
+  @@index([buildingId, startsAt])
+  @@map("financial_periods")
+}
+
+/// BM-03 §19. An effective-dated, versioned charge formula.
+///
+/// THE POINT OF `version`: §52 requires that changing the formula never alters
+/// invoices already produced. Editing a rule in place is therefore forbidden by
+/// the service — a change supersedes the row with version + 1, and old charges
+/// keep pointing at the version that produced them.
+model ChargeRule {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+
+  name        String
+  description String?
+
+  chargeType        ChargeType              @default(REGULAR)
+  calculationMethod ChargeCalculationMethod @default(FIXED)
+
+  /// Monotonic per (building, name). Never reused.
+  version Int @default(1)
+
+  /// Half-open effectivity [effectiveFrom, effectiveTo). Timestamptz so the
+  /// "which rules applied in Mehr" query is unambiguous across DST/offset.
+  effectiveFrom DateTime  @db.Timestamptz(6)
+  effectiveTo   DateTime? @db.Timestamptz(6)
+
+  /// Lower runs first; ties break on createdAt. Matters because a CREDIT rule
+  /// must be able to land after the charge it offsets.
+  priority Int              @default(100)
+  status   ChargeRuleStatus @default(DRAFT)
+
+  /// Method-specific inputs, validated by the DTO for the declared method:
+  ///   FIXED            -> { amount }
+  ///   AREA_BASED       -> { totalCost }            (split by unit area)
+  ///   FIXED_PLUS_AREA  -> { fixedAmount, totalAreaCost }
+  ///   PER_PERSON       -> { ratePerPerson }
+  ///   CUSTOM           -> { expression }           (BM-03 leaves the engine out)
+  ///
+  /// Json is deliberate: §12 says the formula must be stored as configuration,
+  /// not buried in controller code. The trade-off is that shape validation lives
+  /// in the DTO layer, which is why every method's contract is written out here.
+  configuration Json @default("{}")
+
+  /// Which units the rule applies to. Null = every non-archived unit that has a
+  /// financial account. Filters are ANDed.
+  appliesToUnitKinds UnitKind[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  charges  Charge[]
+
+  @@unique([buildingId, name, version])
+  @@index([buildingId, status, effectiveFrom])
+  @@map("charge_rules")
+}
+
+/// BM-03 §50/§51. One execution of the monthly charge generation for a period.
+///
+/// WHY THIS TABLE EXISTS AT ALL: idempotency needs somewhere to stand. Without a
+/// run row, "was this month already generated?" can only be answered by counting
+/// charges, which races against a second generation that is halfway done. The
+/// unique index on (buildingId, financialPeriodId) makes double generation a
+/// database error rather than a duplicate invoice a resident has to dispute.
+model ChargeRun {
+  id                String @id @default(uuid()) @db.Uuid
+  buildingId        String @db.Uuid
+  financialPeriodId String @db.Uuid
+
+  /// Number of units evaluated and charges written — reported back to the
+  /// manager so a run that silently skipped units is visible.
+  unitsEvaluated Int @default(0)
+  chargesCreated Int @default(0)
+  invoicesIssued Int @default(0)
+
+  totalAmount Decimal @default(0) @db.Decimal(18, 2)
+
+  startedAt          DateTime  @default(now())
+  completedAt        DateTime?
+  startedByPersonId  String?   @db.Uuid
+
+  /// Populated when the run aborted; the row is kept (R2) so a failed run is
+  /// investigable rather than invisible.
+  failureReason String?
+
+  building        Building        @relation(fields: [buildingId], references: [id])
+  financialPeriod FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
+  startedByPerson Person?         @relation("ChargeRunStartedBy", fields: [startedByPersonId], references: [id])
+  charges         Charge[]
+
+  /// §51 — the anti-duplicate guarantee. One run per building per period.
+  @@unique([buildingId, financialPeriodId])
+  @@index([buildingId, startedAt])
+  @@map("charge_runs")
+}
+
+/// BM-03 §11. A calculated financial obligation of one unit for one period.
+///
+/// A charge is NOT an invoice (§70: Charge ≠ Invoice ≠ Payment). It is the
+/// computed "this unit owes this much for this reason"; the invoice is the
+/// payable document that may bundle several charges together.
+model Charge {
+  id                String  @id @default(uuid()) @db.Uuid
+  buildingId        String  @db.Uuid
+  unitId            String  @db.Uuid
+  financialPeriodId String  @db.Uuid
+  /// Null for a manually created extraordinary charge (§20).
+  chargeRuleId      String? @db.Uuid
+  chargeRunId       String? @db.Uuid
+
+  chargeType        ChargeType
+  calculationMethod ChargeCalculationMethod
+
+  /// The input figure before apportionment (e.g. the building-wide total cost);
+  /// `calculatedAmount` is what the unit actually owes.
+  baseAmount       Decimal @db.Decimal(18, 2)
+  calculatedAmount Decimal @db.Decimal(18, 2)
+
+  status      ChargeStatus @default(DRAFT)
+  description String?
+  /// Required by the service for EXTRAORDINARY charges (§20).
+  reason      String?
+
+  generatedAt DateTime  @default(now())
+  issuedAt    DateTime?
+  /// Set when a REVERSED charge is superseded; the original row survives (§46).
+  reversedAt  DateTime?
+  reversedByChargeId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building        Building                  @relation(fields: [buildingId], references: [id])
+  unit            Unit                      @relation(fields: [unitId], references: [id])
+  financialPeriod FinancialPeriod           @relation(fields: [financialPeriodId], references: [id])
+  chargeRule      ChargeRule?               @relation(fields: [chargeRuleId], references: [id])
+  chargeRun       ChargeRun?                @relation(fields: [chargeRunId], references: [id])
+  snapshot        ChargeCalculationSnapshot?
+  invoiceLines    InvoiceLine[]
+
+  @@index([buildingId, financialPeriodId])
+  @@index([unitId, financialPeriodId])
+  @@index([buildingId, status])
+  @@map("charges")
+}
+
+/// BM-03 §18/§52. The frozen proof of how one charge was calculated.
+///
+/// THIS IS THE TABLE THAT MAKES HISTORY REPRODUCIBLE. Six months later the
+/// manager changes the formula, a resident disputes an old invoice, and the only
+/// honest answer is "here are the exact inputs and the exact rule version that
+/// produced your number". Recomputing from today's configuration would produce a
+/// different figure and prove nothing.
+model ChargeCalculationSnapshot {
+  id       String @id @default(uuid()) @db.Uuid
+  chargeId String @unique @db.Uuid
+  /// Denormalised for isolation (R4) — snapshots are read in building-scoped
+  /// audit queries that must not have to join through charges.
+  buildingId String @db.Uuid
+
+  /// Identifies the exact rule row used, even after it is superseded.
+  formulaVersion Int
+  chargeRuleId   String? @db.Uuid
+
+  /// Everything that went INTO the number: unit area, eligible area, resident
+  /// count, total cost, rates. Json because the input set differs per method and
+  /// this is evidence to be read, never joined on.
+  inputs Json
+  /// Intermediate components (fixed part, area part, ...) so the arithmetic can
+  /// be re-checked line by line without re-running the engine.
+  values Json
+
+  calculatedAmount Decimal  @db.Decimal(18, 2)
+  calculatedAt     DateTime @default(now())
+
+  charge Charge @relation(fields: [chargeId], references: [id])
+
+  @@index([buildingId, calculatedAt])
+  @@map("charge_calculation_snapshots")
+}
+
+/// BM-03 §21. The payable document issued to a unit for a period.
+///
+/// `paidAmount` and `balance` are maintained inside the settlement transaction
+/// together with the ledger entry that justifies them. They are a materialised
+/// convenience for listing screens; the ledger remains the source of truth (§7),
+/// and the e2e suite asserts the two agree.
+model Invoice {
+  id                String @id @default(uuid()) @db.Uuid
+  buildingId        String @db.Uuid
+  unitId            String @db.Uuid
+  financialPeriodId String @db.Uuid
+
+  /// Human-facing, gap-free per building, never reused after issuance (§23).
+  /// Allocated inside the issuing transaction — see prisma/sql/003.
+  invoiceNumber String
+
+  issueDate DateTime  @db.Timestamptz(6)
+  dueDate   DateTime  @db.Timestamptz(6)
+
+  subtotal Decimal @default(0) @db.Decimal(18, 2)
+  discount Decimal @default(0) @db.Decimal(18, 2)
+  penalty  Decimal @default(0) @db.Decimal(18, 2)
+  total    Decimal @default(0) @db.Decimal(18, 2)
+
+  paidAmount Decimal @default(0) @db.Decimal(18, 2)
+  balance    Decimal @default(0) @db.Decimal(18, 2)
+
+  status InvoiceStatus @default(DRAFT)
+
+  issuedAt    DateTime?
+  paidAt      DateTime?
+  cancelledAt DateTime?
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building        Building        @relation(fields: [buildingId], references: [id])
+  unit            Unit            @relation(fields: [unitId], references: [id])
+  financialPeriod FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
+  lines           InvoiceLine[]
+
+  @@unique([buildingId, invoiceNumber])
+  @@index([buildingId, status])
+  @@index([unitId, issueDate])
+  @@index([buildingId, financialPeriodId])
+  @@index([buildingId, dueDate])
+  @@map("invoices")
+}
+
+/// BM-03 §22. One charge as it appears on an invoice.
+///
+/// The description and unit price are COPIED rather than read through to the
+/// charge on display: an invoice is a document, and a document that changes
+/// wording when master data is edited is not evidence of what was billed.
+model InvoiceLine {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+  invoiceId  String @db.Uuid
+  /// Null for a free-form line (discount, rounding) that no charge produced.
+  chargeId   String? @db.Uuid
+
+  description String
+  quantity    Decimal @default(1) @db.Decimal(12, 3)
+  unitPrice   Decimal @db.Decimal(18, 2)
+  amount      Decimal @db.Decimal(18, 2)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  charge  Charge? @relation(fields: [chargeId], references: [id])
+
+  /// A charge may appear on at most one invoice — the constraint that stops the
+  /// same obligation being billed twice.
+  @@unique([chargeId])
+  @@index([invoiceId, sortOrder])
+  @@index([buildingId])
+  @@map("invoice_lines")
+}
+
+/// BM-03 §7/§8. THE SOURCE OF FINANCIAL TRUTH. Append-only, double-entry shaped.
+///
+/// Read this before touching anything financial:
+///
+///  1. NOTHING IN THIS TABLE IS EVER UPDATED OR DELETED. A mistake is corrected
+///     by writing a REVERSAL entry (§46), which is why `reversesEntryId` exists
+///     and why there is no `deletedAt`.
+///
+///  2. `direction` + `amount` replace `balance += x` (§8). A unit's outstanding
+///     balance is SUM(debits) - SUM(credits) over its entries — deterministic,
+///     recomputable from scratch, and identical no matter what order the rows
+///     were written in.
+///
+///  3. SIGN CONVENTION, stated once so no caller has to guess: DEBIT increases
+///     what the unit OWES the building (a charge). CREDIT decreases it (a
+///     payment). `unitId` is null for building-level entries such as an expense.
+model LedgerEntry {
+  id                String  @id @default(uuid()) @db.Uuid
+  buildingId        String  @db.Uuid
+  /// Null = a building-level entry with no single unit responsible.
+  unitId            String? @db.Uuid
+  financialPeriodId String  @db.Uuid
+
+  direction LedgerDirection
+  amount    Decimal         @db.Decimal(18, 2)
+  currency  String          @default("IRR")
+
+  /// What caused this entry, and the id of that thing. Together they let a
+  /// reversal find its target and let reconciliation (§60) match both sides.
+  referenceType LedgerReferenceType
+  referenceId   String?             @db.Uuid
+
+  description String?
+
+  /// Set only on entries whose referenceType is REVERSAL, pointing at the entry
+  /// being undone. The original is never touched.
+  reversesEntryId String? @db.Uuid
+
+  /// Idempotency key for externally triggered effects (payment callbacks, §34).
+  /// Unique where present: a provider retrying the same callback finds the key
+  /// taken and produces no second ledger effect.
+  idempotencyKey String?
+
+  occurredAt      DateTime @db.Timestamptz(6)
+  createdAt       DateTime @default(now())
+  createdByPersonId String? @db.Uuid
+
+  building        Building        @relation(fields: [buildingId], references: [id])
+  unit            Unit?           @relation(fields: [unitId], references: [id])
+  financialPeriod FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
+  createdByPerson Person?         @relation("LedgerCreatedBy", fields: [createdByPersonId], references: [id])
+  reversesEntry   LedgerEntry?    @relation("LedgerReversal", fields: [reversesEntryId], references: [id])
+  reversedBy      LedgerEntry[]   @relation("LedgerReversal")
+
+  @@unique([buildingId, idempotencyKey])
+  @@index([buildingId, occurredAt])
+  @@index([unitId, occurredAt])
+  @@index([buildingId, financialPeriodId])
+  @@index([referenceType, referenceId])
+  @@map("ledger_entries")
+}
+
+/// BM-03 §26/§27. Money a unit paid that no invoice consumed.
+///
+/// Overpayment must become a credit rather than disappearing (§26). The credit
+/// is tracked as its own row — not as a negative balance — so that "why does
+/// this unit have 500,000 spare?" always has a source reference to point at.
+model UnitCredit {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+  unitId     String @db.Uuid
+
+  amount        Decimal @db.Decimal(18, 2)
+  /// Decreases as the credit is consumed by later invoices. Never below zero.
+  remainingAmount Decimal @db.Decimal(18, 2)
+  currency      String  @default("IRR")
+
+  status CreditStatus @default(AVAILABLE)
+
+  /// Where the credit came from — normally the payment that overpaid.
+  sourceReferenceType LedgerReferenceType @default(PAYMENT)
+  sourceReferenceId   String?             @db.Uuid
+  note                String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  unit     Unit     @relation(fields: [unitId], references: [id])
+
+  @@index([buildingId, status])
+  @@index([unitId, status])
+  @@map("unit_credits")
 }

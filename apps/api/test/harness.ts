@@ -33,6 +33,21 @@ import { createPersianValidationPipe } from '../src/core/http/validation-message
  */
 const TRUNCATED_TABLES = [
   'audit_logs',
+  // BM-03 finance, child-first. These MUST be listed: a finance table left out
+  // keeps rows across suites, and the ledger totals a later suite asserts on
+  // would silently include another suite's charges.
+  'ledger_entries',
+  'invoice_lines',
+  'invoices',
+  'charge_calculation_snapshots',
+  'charges',
+  'charge_runs',
+  'charge_rules',
+  'unit_credits',
+  'unit_financial_accounts',
+  'building_financial_accounts',
+  'financial_periods',
+  'invoice_number_sequences',
   'invitations',
   'unit_occupancies',
   'unit_ownerships',

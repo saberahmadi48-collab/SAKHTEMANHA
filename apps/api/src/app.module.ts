@@ -7,6 +7,7 @@ import { validateEnv } from './config/env.validation';
 import { CoreModule } from './core/core.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BuildingsModule } from './modules/buildings/buildings.module';
+import { FinanceModule } from './modules/finance/finance.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { ManagementTermsModule } from './modules/management-terms/management-terms.module';
 import { MembersModule } from './modules/members/members.module';
@@ -36,8 +37,6 @@ import { UnitsModule } from './modules/units/units.module';
  * that a missing tier is obvious at a glance.
  *
  * Wiring order to come:
- *   BM-02  IdentityModule  (Person, Memberships, Ownership, Occupancy, Invitations)
- *   BM-03  FinanceModule
  *   BM-04  PaymentsModule
  *   BM-05  MaintenanceModule + ProvidersModule
  *   BM-06  GovernanceModule
@@ -75,6 +74,10 @@ import { UnitsModule } from './modules/units/units.module';
     // no tenant scope at all, so their position here is cosmetic rather than
     // load-bearing.
     ProfileModule,
+
+    // BM-03. Reads unit area/share (BM-01) and title/occupancy (BM-02) as the
+    // inputs to charge calculation, so it necessarily comes after both.
+    FinanceModule,
   ],
   providers: [
     // ThrottlerGuard must be registered as a GLOBAL guard, not merely imported.
