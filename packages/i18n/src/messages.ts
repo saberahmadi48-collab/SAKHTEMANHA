@@ -304,6 +304,21 @@ export const ERRORS = {
     'برای این واحد در این بازه زمانی سکونت دیگری ثبت شده است',
   occupantRequired: 'برای این نوع سکونت باید شخص ساکن مشخص شود',
   vacantMustHaveNoOccupant: 'برای سکونت «خالی» نباید شخصی ثبت شود',
+  ownershipClosedNotEditable:
+    'دوره مالکیت پایان‌یافته ویرایش نمی‌شود؛ سابقه مالکیت باید دست‌نخورده بماند',
+  occupancyClosedNotEditable:
+    'دوره سکونت پایان‌یافته ویرایش نمی‌شود؛ سابقه سکونت باید دست‌نخورده بماند',
+  ownershipAlreadyClosed: 'این دوره مالکیت پیش‌تر پایان یافته است',
+  occupancyAlreadyClosed: 'این دوره سکونت پیش‌تر پایان یافته است',
+  ownershipEndBeforeStart: 'پایان دوره مالکیت نمی‌تواند پیش از آغاز آن باشد',
+  occupancyEndBeforeStart: 'پایان دوره سکونت نمی‌تواند پیش از آغاز آن باشد',
+  ownerNotBuildingMember:
+    'مالک باید از پیش عضو همین ساختمان باشد',
+  occupantNotBuildingMember:
+    'ساکن باید از پیش عضو همین ساختمان باشد',
+  ownershipSharePositive: 'سهم مالکیت باید بزرگ‌تر از صفر و حداکثر ۱۰۰ باشد',
+  primaryOwnerRequired:
+    'هر واحد باید در هر لحظه یک مالک اصلی داشته باشد',
 
   // دوره مدیریت (BM-01 §25، §26 — قانون یکم BM-00)
   termOverlapsExisting:

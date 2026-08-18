@@ -10,7 +10,9 @@ import { BuildingsModule } from './modules/buildings/buildings.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { ManagementTermsModule } from './modules/management-terms/management-terms.module';
 import { MembersModule } from './modules/members/members.module';
+import { OccupanciesModule } from './modules/occupancies/occupancies.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { OwnershipsModule } from './modules/ownerships/ownerships.module';
 import { UnitsModule } from './modules/units/units.module';
 
 /**
@@ -61,6 +63,12 @@ import { UnitsModule } from './modules/units/units.module';
     // Last of BM-01: terms depend on buildings existing and on members being
     // appointable, so it reads naturally after both.
     ManagementTermsModule,
+    // Temporal attachment of people to units. Both need units to exist and
+    // people to be members, so they read after MembersModule. Kept as two
+    // modules rather than one because BM-03 bills them differently: fixed
+    // charges follow title, consumption charges follow the occupant.
+    OwnershipsModule,
+    OccupanciesModule,
   ],
   providers: [
     // ThrottlerGuard must be registered as a GLOBAL guard, not merely imported.
