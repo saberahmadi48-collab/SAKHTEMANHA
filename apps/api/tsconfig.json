@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    /* Only local aliases here. `@bops/contracts` resolves through the npm
+       workspace symlink to the package's BUILT types (see references below),
+       so no path mapping into another package's src — that is what previously
+       dragged foreign sources under this project's rootDir. */
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "references": [
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/i18n" }
+  ],
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node", "jest"],
+    "paths": {
+      "@bops/contracts": ["../../../packages/contracts/src/index.ts"],
+      "@bops/i18n": ["../../../packages/i18n/src/index.ts"]
+    }
+  },
+  "references": [],
+  "include": ["../src/**/*.ts", "./**/*.ts"]
+}

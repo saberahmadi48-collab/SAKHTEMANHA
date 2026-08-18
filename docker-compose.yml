@@ -1,0 +1,59 @@
+﻿# Local development infrastructure.
+# Production uses managed equivalents (RDS/Cloud SQL, ElastiCache, S3) — the app
+# only ever talks to these through env vars, never hardcoded endpoints.
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    # PostGIS rather than plain Postgres: BM-05 (Service Provider Network) needs
+    # radius/proximity search. Adding the extension later means a migration on a
+    # live multi-tenant DB, so we pay for it on day one.
+    container_name: bops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bops
+      POSTGRES_PASSWORD: bops_dev_password
+      POSTGRES_DB: bops
+    ports:
+      - '5432:5432'
+    volumes:
+      - bops-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bops -d bops']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: bops-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - bops-redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # S3-compatible object storage for documents (BM-07) and work-order photos (BM-05).
+  minio:
+    image: minio/minio:latest
+    container_name: bops-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: bops
+      MINIO_ROOT_PASSWORD: bops_dev_password
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - bops-miniodata:/data
+
+volumes:
+  bops-pgdata:
+  bops-redisdata:
+  bops-miniodata:

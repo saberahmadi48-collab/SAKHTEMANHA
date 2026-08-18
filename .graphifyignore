@@ -1,0 +1,39 @@
+# Graphify scope for the Building Operations Platform monorepo.
+#
+# Graphify already honours .gitignore, which covers node_modules/, dist/, build/,
+# .next/, out/, coverage/ and *.tsbuildinfo. This file only adds what .gitignore
+# deliberately does NOT exclude, so the graph stays focused on architecture.
+#
+# Deliberately NOT excluded (these belong in the graph):
+#   apps/api/prisma/schema.prisma            — the BM-01/BM-02 domain model
+#   apps/api/prisma/migrations/manual/*.sql  — temporal EXCLUDE + partial unique
+#                                              constraints that Prisma cannot express
+#   packages/contracts, packages/i18n        — cross-workspace shared surface
+
+# --- Lockfiles: enormous, zero architectural signal -------------------------
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# --- Editor / tooling state, not project source ----------------------------
+.vs/
+.vscode/
+.idea/
+.v3code/
+.context-bridge/
+
+# --- Graphify's own output (never let a run ingest its previous run) --------
+graphify-out/
+
+# --- Binary assets: fonts are committed on purpose (offline Persian UI),
+#     but they are opaque blobs with nothing for tree-sitter to parse. --------
+apps/web/src/assets/fonts/
+*.woff
+*.woff2
+*.ttf
+*.otf
+*.eot
+
+# --- Generated Prisma client, if a future config emits it outside node_modules
+apps/api/generated/
+**/.prisma/

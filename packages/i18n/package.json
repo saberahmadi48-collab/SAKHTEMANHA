@@ -1,0 +1,13 @@
+{
+  "name": "@bops/i18n",
+  "version": "0.1.0",
+  "private": true,
+  "description": "منبع واحد تمام متن‌های فارسی رابط کاربری — مشترک بین API و وب",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

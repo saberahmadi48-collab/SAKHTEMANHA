@@ -1,0 +1,915 @@
+// ============================================================================
+//  Building Operations Platform — Prisma schema
+//  Scope: BM-01 (Organization / Building / Unit / Address / Location /
+//         ManagementTerm) + BM-02 (User / Person / Memberships / Ownership /
+//         Occupancy / Invitations / Roles)
+//
+//  Schema-wide conventions, each traceable to a BM-00 non-negotiable rule:
+//
+//  R1 "Building is permanent, manager is temporary"
+//     -> Building has NO manager column and NO cascade from Organization.
+//        Management is modelled as ManagementTerm (a time-boxed relation).
+//        Replacing a manager creates a new term; it never mutates or deletes
+//        building history.
+//
+//  R2 "Historical data is never hard-deleted"
+//     -> Mutable master data carries `archivedAt` (soft delete). Temporal facts
+//        (ownership, occupancy, membership, terms) are closed by setting an end
+//        date, never by DELETE. There is deliberately no `onDelete: Cascade`
+//        anywhere in this schema — a cascade is a hard delete with extra steps.
+//
+//  R4 "Multi-building from day one, strong data isolation"
+//     -> EVERY building-scoped table carries a denormalised `buildingId`, even
+//        when it is reachable via a parent. That redundancy is deliberate: it
+//        lets a single WHERE clause (and Postgres RLS later) enforce isolation
+//        without a join, and it makes a cross-tenant leak a schema violation
+//        rather than a forgotten join condition.
+//
+//  R8 "Authorization = Role + Org + Building + Resource + Action"
+//     -> Roles are never a column on User. They live on membership rows that
+//        are themselves scoped to an Organization or a Building.
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // citext     -> case-insensitive email/identifier uniqueness at the DB level.
+  // pgcrypto   -> gen_random_uuid() for server-side id defaults.
+  // btree_gist -> required by the temporal EXCLUDE constraints in prisma/sql/.
+  //
+  // postgis is deliberately NOT listed. It was declared here ahead of BM-05
+  // proximity search, but nothing in this schema uses a geography/geometry
+  // column — Location stores plain Decimal lat/lng — so the only thing it did
+  // was emit `CREATE EXTENSION postgis` into the migration and hard-fail every
+  // Postgres build that does not ship the extension (error 0A000). Add it back
+  // in the BM-05 migration, together with the first column that needs it.
+  extensions = [citext, pgcrypto, btree_gist]
+}
+
+// ============================================================================
+//  ENUMS
+// ============================================================================
+
+/// Role catalogue. Roles are ALWAYS interpreted together with the scope of the
+/// membership row they sit on (org-level vs building-level) — a BUILDING_MANAGER
+/// on building A has zero authority on building B.
+enum BuildingRole {
+  /// Elected head of the management board for the active ManagementTerm.
+  BUILDING_MANAGER
+  /// Board member serving in the active term (BM-06 governance).
+  BOARD_MEMBER
+  /// Elected/appointed auditor. Read-only over finance, cannot mutate it.
+  AUDITOR
+  /// Holds legal title to at least one unit in this building.
+  OWNER
+  /// Lives in a unit without owning it.
+  TENANT
+  /// Staff (doorman, janitor) — operational access, no financial authority.
+  STAFF
+  /// Read-only observer (e.g. an outgoing manager during handover, BM-06).
+  VIEWER
+}
+
+enum OrganizationRole {
+  /// Full control over the organization and every building under it.
+  ORG_OWNER
+  /// Day-to-day administration; cannot delete/transfer the organization.
+  ORG_ADMIN
+  /// Manages billing + subscription (BM-00 rule 7: subscription is the revenue
+  /// model, so this is a distinct duty from building operations).
+  ORG_BILLING
+  /// Cross-building read-only (e.g. a property-management analyst).
+  ORG_VIEWER
+}
+
+enum MembershipStatus {
+  /// Invited but the invitation has not been accepted yet.
+  PENDING
+  ACTIVE
+  /// Temporarily disabled without losing history (R2).
+  SUSPENDED
+  /// Ended. Row is retained forever; `endedAt` carries the effective date.
+  ENDED
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  /// Account closed. Row is retained: financial history must stay attributable.
+  DEACTIVATED
+}
+
+/// BM-01 §15. Deliberately an enum rather than a lookup table: these five
+/// categories drive charge apportionment rules in BM-03, so a tenant inventing
+/// a sixth one at runtime would silently fall outside every rule.
+enum UnitKind {
+  RESIDENTIAL
+  COMMERCIAL
+  OFFICE
+  PARKING
+  STORAGE
+  /// Lobby, roof, plant room — shared, usually not chargeable to one owner.
+  COMMON_AREA
+  OTHER
+}
+
+/// BM-01 §16. Note VACANT is NOT here: "nobody lives there" is an occupancy
+/// fact with a date range (UnitOccupancy.kind = VACANT), not a property of the
+/// physical unit. Modelling it as a status would lose the period it was empty.
+enum UnitStatus {
+  ACTIVE
+  /// Physically exists but excluded from charge generation (BM-03).
+  INACTIVE
+  UNDER_CONSTRUCTION
+  UNDER_RENOVATION
+  ARCHIVED
+}
+
+enum OccupancyKind {
+  /// Occupied by a legal owner of the unit.
+  OWNER_OCCUPIED
+  /// Occupied under a lease.
+  TENANT
+  /// Occupant with no contract on record (family member, caretaker).
+  OTHER
+  /// Deliberately recorded so "empty" is an asserted fact with a date range,
+  /// not merely the absence of a row (BM-03 vacancy-based charge rules).
+  VACANT
+}
+
+enum ManagementTermStatus {
+  /// Created but not yet begun (e.g. elected, takes office next month).
+  SCHEDULED
+  ACTIVE
+  /// Term ended normally at its scheduled end date.
+  COMPLETED
+  /// Ended early (resignation, removal). `terminationReason` explains it.
+  TERMINATED
+}
+
+enum HandoverStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  DISPUTED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  /// Withdrawn by the inviter before acceptance.
+  REVOKED
+  EXPIRED
+}
+
+/// BM-01 §8 building lifecycle.
+enum BuildingStatus {
+  /// Onboarding is incomplete (§32 explicitly requires draft support).
+  DRAFT
+  ACTIVE
+  /// Temporary operational restriction — subscription lapsed, dispute, etc.
+  SUSPENDED
+  /// No longer actively managed, but still readable.
+  INACTIVE
+  /// No active management term — the building still exists and keeps its
+  /// history (R1); it is simply unmanaged until an election completes.
+  UNMANAGED
+  /// Historical state. Archiving never deletes data (§8, R2).
+  ARCHIVED
+  /// Demolished / permanently out of scope. Never deleted (R2).
+  DECOMMISSIONED
+}
+
+/// BM-01 §4.
+enum OrganizationType {
+  INDIVIDUAL
+  PROPERTY_MANAGEMENT_COMPANY
+  ENTERPRISE
+  OTHER
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+/// BM-01 §11/§12 — how precisely a building's coordinates may be revealed.
+/// The API downgrades what it returns based on this AND the caller's role; the
+/// value here is the ceiling, never the floor.
+enum LocationPrecision {
+  /// Exact coordinates may be shown to authorized callers.
+  EXACT
+  /// Only a coarse cell/neighbourhood is ever returned.
+  APPROXIMATE
+  /// No coordinates leave the server for anyone below org level.
+  HIDDEN
+}
+
+/// BM-01 §27 — how often charges are generated. Declared in BM-01 because the
+/// building settings row must exist from onboarding; BM-03 owns the engine that
+/// reads it.
+enum ChargeCycle {
+  MONTHLY
+  QUARTERLY
+  SEMI_ANNUAL
+  ANNUAL
+}
+
+// ============================================================================
+//  BM-01 — ORGANIZATION / BUILDING / UNIT / ADDRESS / LOCATION / TERM
+// ============================================================================
+
+/// The commercial tenant of the platform and the subscription holder
+/// (BM-00 rule 7). A self-managed single building still gets exactly one
+/// Organization, so there is never a second "org-less" code path to maintain.
+model Organization {
+  id   String @id @default(uuid()) @db.Uuid
+  /// Stable public identifier used in URLs. Immutable after creation.
+  slug String @unique @db.Citext
+  name String
+
+  /// BM-01 §4. Drives onboarding copy and, later, subscription tiers. A
+  /// self-managed single building is INDIVIDUAL — never a missing value, so
+  /// there is no "org without a type" branch to handle.
+  type   OrganizationType   @default(INDIVIDUAL)
+  status OrganizationStatus @default(ACTIVE)
+
+  /// Legal/registration details, kept nullable: an org can onboard before its
+  /// paperwork is complete.
+  legalName       String?
+  taxIdentifier   String?
+  contactEmail    String? @db.Citext
+  contactPhone    String?
+  defaultLocale   String  @default("fa-IR")
+  defaultCurrency String  @default("IRR")
+  defaultTimeZone String  @default("Asia/Tehran")
+
+  /// Soft delete (R2). Nothing in this schema is ever hard-deleted.
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  buildings   Building[]
+  memberships OrganizationMembership[]
+  invitations Invitation[]
+  addresses   Address[]
+
+  @@index([archivedAt])
+  @@map("organizations")
+}
+
+/// Postal address. Extracted from Building/Person rather than inlined so the
+/// same shape can be reused by service providers (BM-05) and billing (BM-04)
+/// without a second address implementation.
+model Address {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+
+  countryCode  String  @default("IR") @db.VarChar(2)
+  province     String?
+  city         String
+  district     String?
+  /// Free-form street line — deliberately not over-normalised; Iranian
+  /// addresses do not decompose cleanly into house-number/street pairs.
+  line1        String
+  line2        String?
+  postalCode   String?
+  /// Registered plaque/pelak number where applicable.
+  plaqueNumber String?
+
+  /// Precise coordinates. Nullable because an address may be recorded before
+  /// it is geocoded. PRIVACY (BM-00 rule 6, BM-01 §12): for service providers,
+  /// exact coordinates are never exposed through the API — only a coarse cell
+  /// or a computed distance band is returned to non-privileged callers.
+  latitude  Decimal? @db.Decimal(9, 6)
+  longitude Decimal? @db.Decimal(9, 6)
+  /// Geohash prefix used for privacy-preserving "near me" queries (BM-05).
+  geoCell   String?
+
+  /// BM-01 §11. The CEILING on what the API may reveal about this location.
+  /// Enforced server-side in BuildingsService.applyLocationPrecision — never by
+  /// the client hiding a field (§12 says this explicitly).
+  locationPrecision LocationPrecision @default(APPROXIMATE)
+  /// Who produced the coordinates (manual entry, a geocoding provider). Kept
+  /// because a manually-typed pin and a geocoded one deserve different trust.
+  locationProvider  String?
+  locationUpdatedAt DateTime?
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  buildings    Building[]
+
+  @@index([organizationId])
+  @@index([city, district])
+  @@index([geoCell])
+  @@map("addresses")
+}
+
+/// The permanent, central entity of the platform (BM-00 rule 1).
+///
+/// A Building outlives every manager, board and term. Consequently:
+///   - it holds NO `managerId` column — management is a ManagementTerm;
+///   - it is never deleted, only DECOMMISSIONED or archived;
+///   - `organizationId` may change (a building can move to another management
+///     company) without touching the building's id or its history.
+model Building {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  addressId      String? @db.Uuid
+
+  /// Human-facing name; may be renamed freely without affecting identity.
+  name String
+  /// Stable per-organization public code used in URLs and documents.
+  code String @db.Citext
+
+  status BuildingStatus @default(ACTIVE)
+
+  /// Physical characteristics — drive charge apportionment in BM-03.
+  floorCount        Int?
+  basementCount     Int?
+  totalUnitCount    Int?
+  constructionYear  Int?
+  totalAreaSqm      Decimal? @db.Decimal(12, 2)
+  hasElevator       Boolean  @default(false)
+  elevatorCount     Int      @default(0)
+  hasParking        Boolean  @default(false)
+  hasCentralHeating Boolean  @default(false)
+
+  /// Operational settings kept per building because two buildings under the
+  /// same organization can legitimately differ (currency for a mixed portfolio,
+  /// timezone for a cross-border one).
+  currency String @default("IRR")
+  timeZone String @default("Asia/Tehran")
+  locale   String @default("fa-IR")
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  organization    Organization         @relation(fields: [organizationId], references: [id])
+  address         Address?             @relation(fields: [addressId], references: [id])
+  settings        BuildingSettings?
+  units           Unit[]
+  managementTerms ManagementTerm[]
+  memberships     BuildingMembership[]
+  unitMemberships UnitMembership[]
+  ownerships      UnitOwnership[]
+  occupancies     UnitOccupancy[]
+  invitations     Invitation[]
+
+  /// Code is unique per organization, not globally: two management companies
+  /// may both use "A1".
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@index([archivedAt])
+  @@map("buildings")
+}
+
+/// Operational configuration for one building (BM-01 §27).
+///
+/// Split from Building deliberately: identity is permanent (R1) while settings
+/// change every time a board is elected. Keeping them in one row would mean a
+/// settings edit touches `buildings.updatedAt`, making the permanent entity look
+/// mutated on every preference change and polluting its audit trail.
+///
+/// One-to-one with Building, created together with it so no code path has to
+/// handle "settings not configured yet".
+model BuildingSettings {
+  buildingId String @id @db.Uuid
+
+  /// BM-03 reads this; BM-01 only stores it. No charge formula lives here —
+  /// §17 and §44 forbid embedding finance logic in BM-01.
+  chargeCycle ChargeCycle @default(MONTHLY)
+  /// Day of month charges are issued (1-28; capped so it exists in every month).
+  chargeDueDay Int        @default(10)
+
+  /// Communication defaults (BM-07 consumes these).
+  notifyByEmail Boolean @default(true)
+  notifyBySms   Boolean @default(false)
+  notifyInApp   Boolean @default(true)
+
+  /// Privacy defaults (BM-00 rule 6). `showResidentContacts = false` means the
+  /// directory returns masked phone numbers even to other residents; only
+  /// PERSON_READ_CONTACT holders see the real value.
+  showResidentContacts Boolean @default(false)
+  showUnitOwners       Boolean @default(true)
+  /// Publishes the building in provider-facing discovery with an APPROXIMATE
+  /// location only (BM-05). Off by default — opting IN to visibility is the
+  /// safe direction.
+  discoverableByProviders Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+
+  @@map("building_settings")
+}
+
+/// A physical, chargeable space inside a building.
+///
+/// Unit is a permanent physical fact, exactly like Building. WHO owns it and
+/// WHO lives in it are separate temporal relations (UnitOwnership /
+/// UnitOccupancy) — never columns here. That split is what makes "the flat was
+/// sold in March" expressible without destroying the pre-March ledger.
+model Unit {
+  id         String @id @default(uuid()) @db.Uuid
+  /// R4: denormalised tenant key. Every building-scoped query filters on it
+  /// directly rather than joining up to Building.
+  buildingId String @db.Uuid
+
+  /// Display label as residents know it ("12", "3B", "P-14").
+  label  String     @db.Citext
+  kind   UnitKind   @default(RESIDENTIAL)
+  status UnitStatus @default(ACTIVE)
+
+  floor        Int?
+  block        String?
+  areaSqm      Decimal? @db.Decimal(10, 2)
+  bedroomCount Int?
+  /// Share of common expenses, as a ratio (BM-03 apportionment input).
+  /// Decimal, never float: this multiplies money.
+  shareRatio   Decimal? @db.Decimal(10, 6)
+  parkingSpots Int      @default(0)
+  storageUnits Int      @default(0)
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  building    Building         @relation(fields: [buildingId], references: [id])
+  ownerships  UnitOwnership[]
+  occupancies UnitOccupancy[]
+  memberships UnitMembership[]
+  invitations Invitation[]
+
+  @@unique([buildingId, label])
+  @@index([buildingId, status])
+  @@index([buildingId, kind])
+  @@map("units")
+}
+
+/// A time-boxed period during which a specific person/board manages a building
+/// (BM-00 rule 1, BM-06 governance).
+///
+/// This is the entity that makes "manager" temporary. Authorization for
+/// manager-only actions resolves through the ACTIVE term, so revoking authority
+/// is closing a term — not deleting a user or rewriting a building row.
+model ManagementTerm {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+
+  /// Sequential term number within the building (1, 2, 3...). Makes governance
+  /// documents and audit trails human-readable.
+  termNumber Int
+  title      String?
+
+  status ManagementTermStatus @default(SCHEDULED)
+
+  /// Half-open interval [startsAt, endsAt). `endsAt` null = open-ended term.
+  ///
+  /// MUST stay @db.Timestamptz. The no-overlap EXCLUDE constraint in
+  /// prisma/sql/001 indexes `tstzrange(startsAt, endsAt)`, and on a plain
+  /// `timestamp` that expression depends on the session TimeZone, so Postgres
+  /// refuses it as not IMMUTABLE. Downgrading the type silently drops the only
+  /// thing preventing two simultaneous governing terms on one building.
+  startsAt DateTime  @db.Timestamptz(6)
+  endsAt   DateTime? @db.Timestamptz(6)
+
+  /// The person holding primary management authority for this term. Nullable
+  /// while a term is being prepared before an election concludes (BM-06).
+  managerPersonId String? @db.Uuid
+
+  /// Populated when status = TERMINATED (R2: we record why, we do not delete).
+  terminationReason String?
+  terminatedAt      DateTime?
+
+  /// Handover tracking (BM-06). Kept on the term because handover is a property
+  /// of the transition between terms, not of the building.
+  handoverStatus      HandoverStatus @default(NOT_STARTED)
+  handoverCompletedAt DateTime?
+  /// Term this one received custody from — an explicit chain of custody.
+  /// Unique because a term can be succeeded by at most one term.
+  previousTermId      String?        @unique @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building      Building        @relation(fields: [buildingId], references: [id])
+  managerPerson Person?         @relation("ManagedTerms", fields: [managerPersonId], references: [id])
+  previousTerm  ManagementTerm? @relation("TermChain", fields: [previousTermId], references: [id])
+  nextTerm      ManagementTerm? @relation("TermChain")
+
+  memberships BuildingMembership[]
+
+  @@unique([buildingId, termNumber])
+  @@index([buildingId, status])
+  @@index([buildingId, startsAt, endsAt])
+  @@map("management_terms")
+}
+
+// ============================================================================
+//  BM-02 — IDENTITY, MEMBERSHIP, OWNERSHIP, OCCUPANCY, INVITATIONS
+// ============================================================================
+
+/// Authentication principal — credentials ONLY.
+///
+/// User (can log in) is deliberately split from Person (who someone is). A
+/// registered owner living abroad may have no account; a doorman may have an
+/// account with no ownership. Merging them forces fake accounts for real people
+/// and orphaned history when an account is closed.
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// citext: case-insensitive uniqueness enforced by Postgres, not by app code
+  /// remembering to call .toLowerCase().
+  email        String? @unique @db.Citext
+  phoneNumber  String? @unique
+  /// bcrypt hash. Never returned by any serializer — see the field-guard in
+  /// PrismaService and the User response DTOs.
+  passwordHash String?
+
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  status          UserStatus @default(PENDING_VERIFICATION)
+
+  /// Security metadata for the refresh-token rotation flow.
+  lastLoginAt         DateTime?
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  /// Bumped on password change / forced logout; any refresh token issued with
+  /// an older generation is rejected without needing a token blacklist.
+  tokenGeneration     Int       @default(0)
+  mfaEnabled          Boolean   @default(false)
+  mfaSecret           String?
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  person          Person?
+  refreshTokens   RefreshToken[]
+  sentInvitations Invitation[]   @relation("InvitedBy")
+
+  @@index([status])
+  @@map("users")
+}
+
+/// Hashed refresh tokens, one row per active session/device.
+/// Stored hashed so a database leak does not hand out live sessions; rotation
+/// is enforced by `replacedById` (reuse of a rotated token = theft signal).
+model RefreshToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// Set when this token was rotated; presenting it afterwards means replay.
+  replacedById String?   @db.Uuid
+
+  userAgent String?
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// A real human being — the PII record and the subject of every membership,
+/// ownership and occupancy relation.
+///
+/// A Person can exist with `userId = null` (an owner on file who never logged
+/// in). Linking an account later attaches the user without rewriting history.
+model Person {
+  id     String  @id @default(uuid()) @db.Uuid
+  userId String? @unique @db.Uuid
+
+  firstName     String
+  lastName      String
+  displayName   String?
+  nationalId    String?
+  email         String? @db.Citext
+  phoneNumber   String?
+  /// PRIVACY (BM-00 rule 6): when false, the API returns a masked phone and
+  /// routes contact through platform messaging (BM-07) instead of exposing it.
+  phoneIsPublic Boolean @default(false)
+
+  avatarUrl String?
+  locale    String  @default("fa-IR")
+  notes     String?
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user                    User?                    @relation(fields: [userId], references: [id])
+  organizationMemberships OrganizationMembership[]
+  buildingMemberships     BuildingMembership[]
+  unitMemberships         UnitMembership[]
+  ownerships              UnitOwnership[]
+  occupancies             UnitOccupancy[]
+  managedTerms            ManagementTerm[]         @relation("ManagedTerms")
+  invitations             Invitation[]             @relation("InvitedPerson")
+
+  @@index([lastName, firstName])
+  @@index([nationalId])
+  @@map("people")
+}
+
+/// Person's role AT THE ORGANIZATION level (BM-00 rule 8, org tier).
+model OrganizationMembership {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  personId       String @db.Uuid
+
+  role   OrganizationRole
+  status MembershipStatus @default(ACTIVE)
+
+  startedAt DateTime  @default(now())
+  /// Closing a membership sets this. The row is never deleted (R2).
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  person       Person       @relation(fields: [personId], references: [id])
+
+  /// Only ONE ACTIVE row per (org, person, role) is allowed; historical ENDED
+  /// rows may repeat. Prisma cannot express a partial unique index, so it lives
+  /// in prisma/migrations/manual/002_partial_unique_indexes.sql.
+  @@index([organizationId, status])
+  @@index([personId, status])
+  @@map("organization_memberships")
+}
+
+/// Person's role AT A SPECIFIC BUILDING — the primary authorization row
+/// (BM-00 rule 8).
+///
+/// Every building-scoped permission check resolves to a row here. Because the
+/// row carries `buildingId`, authority CANNOT leak across buildings: a query
+/// for building B simply finds no membership for a building-A manager.
+model BuildingMembership {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+  personId   String @db.Uuid
+
+  role   BuildingRole
+  status MembershipStatus @default(ACTIVE)
+
+  /// Optional link to the term under which this authority was granted. Board
+  /// roles reference their term so that expiring a term expires the authority
+  /// automatically (BM-01 / BM-06).
+  managementTermId String? @db.Uuid
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  /// Per-membership overrides on top of the role's default permission set.
+  /// Explicit grant/deny string arrays rather than free-form JSON so they stay
+  /// queryable and auditable.
+  extraPermissions   String[] @default([])
+  revokedPermissions String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building       Building        @relation(fields: [buildingId], references: [id])
+  person         Person          @relation(fields: [personId], references: [id])
+  managementTerm ManagementTerm? @relation(fields: [managementTermId], references: [id])
+
+  @@index([buildingId, status])
+  @@index([buildingId, role, status])
+  @@index([personId, status])
+  @@map("building_memberships")
+}
+
+/// Person's relationship to a specific UNIT (resident directory, unit-level
+/// visibility). Distinct from ownership/occupancy: this answers "may this
+/// person see this unit's data", not "who holds title" or "who lives here".
+model UnitMembership {
+  id         String @id @default(uuid()) @db.Uuid
+  /// R4: denormalised tenant key so unit-level rows are filterable by building
+  /// in one predicate.
+  buildingId String @db.Uuid
+  unitId     String @db.Uuid
+  personId   String @db.Uuid
+
+  /// Marks the person who receives invoices/notices for the unit (BM-03/BM-07).
+  isPrimaryContact Boolean @default(false)
+  /// May act on the unit's behalf (vote, open work orders).
+  canRepresentUnit Boolean @default(false)
+
+  status    MembershipStatus @default(ACTIVE)
+  startedAt DateTime         @default(now())
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  unit     Unit     @relation(fields: [unitId], references: [id])
+  person   Person   @relation(fields: [personId], references: [id])
+
+  @@index([buildingId, status])
+  @@index([unitId, status])
+  @@index([personId, status])
+  @@map("unit_memberships")
+}
+
+/// TEMPORAL legal title over a unit.
+///
+/// Supports fractional/joint ownership via `sharePercent`. Selling a unit does
+/// NOT edit or delete this row — it closes it (`periodEnd`) and opens a new one
+/// for the buyer, so a charge raised in the past stays attributable to whoever
+/// actually owned the unit that month (R2, BM-03).
+model UnitOwnership {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+  unitId     String @db.Uuid
+  personId   String @db.Uuid
+
+  /// Half-open interval [periodStart, periodEnd). Null end = current owner.
+  /// MUST stay @db.Timestamptz — see ManagementTerm.startsAt: the EXCLUDE
+  /// constraint that prevents overlapping title periods requires an IMMUTABLE
+  /// tstzrange() expression, which a plain `timestamp` cannot provide.
+  periodStart DateTime  @db.Timestamptz(6)
+  periodEnd   DateTime? @db.Timestamptz(6)
+
+  /// Ownership share. Active shares for a unit must sum to 100 — enforced in
+  /// the domain service (a DB constraint cannot see the whole set cheaply).
+  sharePercent Decimal @default(100) @db.Decimal(6, 3)
+  /// True for the owner of record who receives statutory notices.
+  isPrimary    Boolean @default(true)
+
+  /// Provenance of the record — deed number, contract reference.
+  titleReference String?
+  acquiredVia    String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  unit     Unit     @relation(fields: [unitId], references: [id])
+  person   Person   @relation(fields: [personId], references: [id])
+
+  /// Overlapping periods for the same (unit, person) are rejected by a Postgres
+  /// EXCLUDE constraint using btree_gist — Prisma cannot express it, so it is
+  /// applied in prisma/migrations/manual/001_temporal_exclusion.sql. Doing it in
+  /// the DB matters: two concurrent transfers would both pass an app-level check.
+  @@index([buildingId, periodStart])
+  @@index([unitId, periodStart, periodEnd])
+  @@index([personId])
+  @@map("unit_ownerships")
+}
+
+/// TEMPORAL physical occupancy — who actually lives/operates there.
+///
+/// Separate from ownership because the biller and the resident are frequently
+/// different people, and BM-03 charge rules split on exactly that (e.g. fixed
+/// charges to the owner, consumption charges to the occupant).
+model UnitOccupancy {
+  id         String  @id @default(uuid()) @db.Uuid
+  buildingId String  @db.Uuid
+  unitId     String  @db.Uuid
+  /// Null when kind = VACANT: an asserted empty period with no person.
+  personId   String? @db.Uuid
+
+  kind OccupancyKind @default(OWNER_OCCUPIED)
+
+  /// Half-open interval [periodStart, periodEnd). Null end = current occupant.
+  /// MUST stay @db.Timestamptz — see ManagementTerm.startsAt. This one guards
+  /// the "a unit cannot be VACANT and tenanted at the same instant" rule.
+  periodStart DateTime  @db.Timestamptz(6)
+  periodEnd   DateTime? @db.Timestamptz(6)
+
+  /// Headcount drives per-person charges in BM-03.
+  residentCount Int @default(1)
+
+  /// Lease details, present for kind = TENANT.
+  leaseReference String?
+  leaseStartsAt  DateTime?
+  leaseEndsAt    DateTime?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  unit     Unit     @relation(fields: [unitId], references: [id])
+  person   Person?  @relation(fields: [personId], references: [id])
+
+  /// A unit cannot have two overlapping occupancy periods at all (unlike
+  /// ownership, which may be jointly held). Enforced by an EXCLUDE constraint
+  /// in prisma/migrations/manual/001_temporal_exclusion.sql.
+  @@index([buildingId, periodStart])
+  @@index([unitId, periodStart, periodEnd])
+  @@index([personId])
+  @@map("unit_occupancies")
+}
+
+/// Invitation to join an organization, a building, or a specific unit.
+///
+/// The invitation carries the SCOPE and ROLE that will be granted. This is the
+/// only sanctioned path to creating a membership from an untrusted actor: the
+/// invitee never supplies buildingId/role themselves (BM-00 rule 8) — they only
+/// present a token, and the server reads the scope from this row.
+model Invitation {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  /// Null for an organization-level invitation.
+  buildingId     String? @db.Uuid
+  /// Optional unit binding (invite the resident of flat 12).
+  unitId         String? @db.Uuid
+
+  /// Only the hash is stored — the raw token exists solely in the emailed link.
+  /// A leaked database therefore cannot be used to accept invitations.
+  tokenHash String @unique
+
+  /// Delivery target. At least one of these is required (checked in the DTO).
+  email       String? @db.Citext
+  phoneNumber String?
+
+  /// Scope + role to be granted on acceptance. Exactly one tier is populated.
+  buildingRole     BuildingRole?
+  organizationRole OrganizationRole?
+
+  /// Pre-linked person when inviting someone already on file.
+  personId String? @db.Uuid
+
+  status     InvitationStatus @default(PENDING)
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+  /// Who issued it — required for the audit trail (R2).
+  invitedByUserId String @db.Uuid
+
+  message String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id])
+  building      Building?    @relation(fields: [buildingId], references: [id])
+  unit          Unit?        @relation(fields: [unitId], references: [id])
+  person        Person?      @relation("InvitedPerson", fields: [personId], references: [id])
+  invitedByUser User         @relation("InvitedBy", fields: [invitedByUserId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([buildingId, status])
+  @@index([email])
+  @@index([expiresAt])
+  @@map("invitations")
+}
+
+/// Append-only audit trail (R2). Every state-changing command writes one row.
+/// No update/delete path exists for this table in application code.
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  organizationId String? @db.Uuid
+  buildingId     String? @db.Uuid
+
+  /// Who acted. Nullable for system/queue-initiated actions.
+  actorUserId   String? @db.Uuid
+  actorPersonId String? @db.Uuid
+
+  /// e.g. "unit.ownership.transferred"
+  action       String
+  resourceType String
+  resourceId   String? @db.Uuid
+
+  /// Before/after snapshots. JSON is acceptable here: this table is written for
+  /// forensics and read by humans, never joined on.
+  before Json?
+  after  Json?
+
+  ipAddress String?
+  userAgent String?
+  requestId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([buildingId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}

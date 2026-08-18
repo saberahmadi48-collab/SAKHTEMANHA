@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * استایل پایه‌ی رابط فارسی راست‌چین.
+ */
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --muted: 210 20% 94%;
+    --muted-foreground: 215 16% 47%;
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 221 83% 53%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --success: 142 71% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 45%;
+    --warning-foreground: 0 0% 100%;
+    --danger: 0 72% 51%;
+    --danger-foreground: 0 0% 100%;
+    --radius: 0.625rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    /* جهت روی تگ html در layout ریشه هم تنظیم می‌شود؛ اینجا به‌عنوان تور
+       ایمنی تکرار شده تا اگر layout دور زده شد، صفحه چپ‌چین نشود. */
+    direction: rtl;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    /* ارقام فارسی به‌صورت پیش‌فرض در کل رابط. */
+    font-feature-settings: 'ss01' on, 'ss02' on;
+  }
+
+  /**
+   * جزیره‌ی چپ‌چین برای محتوایی که ذاتاً لاتین است.
+   *
+   * چرا لازم است: مسیر فایل، آدرس اینترنتی، شناسه‌ی UUID و کد مجوز
+   * (`building:update`) اگر داخل جریان راست‌چین رندر شوند، الگوریتم دوجهته‌ی
+   * یونیکد ترتیب نویسه‌ها را جابه‌جا نشان می‌دهد — «api/v1/buildings» ممکن است
+   * «buildings/v1/api» دیده شود. این کلاس آن را ایزوله می‌کند.
+   *
+   * نکته: این نقض قانون «همه‌چیز فارسی» نیست؛ داده‌ی فنی است، نه متن رابط.
+   */
+  .ltr-island {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: start;
+  }
+
+  /* ورودی‌هایی که فقط داده‌ی لاتین می‌گیرند (رایانامه، گذرواژه). */
+  input[type='email'],
+  input[type='password'],
+  input[type='url'],
+  input[dir='ltr'] {
+    direction: ltr;
+    text-align: start;
+  }
+
+  /* اعداد فارسی در ورودی‌های عددی نمایش داده می‌شوند اما مقدار لاتین می‌ماند. */
+  input[inputmode='numeric'] {
+    font-variant-numeric: normal;
+  }
+
+  /* حلقه‌ی فوکوس قابل مشاهده — الزام دسترس‌پذیری. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* نوار اسکرول باریک‌تر و هماهنگ با پوسته. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-muted-foreground/30;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+  }
+}
+
+@layer components {
+  /* پیوند «رفتن به محتوای اصلی» — فقط هنگام فوکوس با صفحه‌کلید دیده می‌شود. */
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:fixed focus:top-4 focus:start-4
+           focus:z-50 focus:rounded-md focus:bg-primary
+           focus:px-4 focus:py-2 focus:text-primary-foreground;
+  }
+}

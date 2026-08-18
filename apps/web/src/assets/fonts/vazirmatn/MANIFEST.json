@@ -1,0 +1,36 @@
+{
+  "version": "v33.003",
+  "license": "SIL OFL 1.1",
+  "files": [
+    {
+      "file": "Vazirmatn-Regular.woff2",
+      "bytes": 50684,
+      "sha256": "e382101336c6eb32",
+      "source": "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/webfonts/Vazirmatn-Regular.woff2"
+    },
+    {
+      "file": "Vazirmatn-Medium.woff2",
+      "bytes": 51128,
+      "sha256": "3333e31188a2b628",
+      "source": "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/webfonts/Vazirmatn-Medium.woff2"
+    },
+    {
+      "file": "Vazirmatn-SemiBold.woff2",
+      "bytes": 51032,
+      "sha256": "6a39a3c25eb18503",
+      "source": "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/webfonts/Vazirmatn-SemiBold.woff2"
+    },
+    {
+      "file": "Vazirmatn-Bold.woff2",
+      "bytes": 51020,
+      "sha256": "836fae7d42d83faa",
+      "source": "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/webfonts/Vazirmatn-Bold.woff2"
+    },
+    {
+      "file": "Vazirmatn[wght].woff2",
+      "bytes": 111152,
+      "sha256": "4e3fa217d38fdafc",
+      "source": "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/webfonts/Vazirmatn%5Bwght%5D.woff2"
+    }
+  ]
+}

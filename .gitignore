@@ -1,0 +1,45 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Secrets — never committed. .env.example is the contract, .env is local only.
+.env
+.env.*
+!.env.example
+
+# فونت‌ها عمداً در مخزن نگهداری می‌شوند (پروانه‌ی SIL OFL 1.1).
+# الزام محصول: رابط باید بدون هیچ درخواست شبکه‌ای به گوگل/CDN خارجی رندر شود.
+# اگر روزی یک الگوی کلی برای دارایی‌های باینری اضافه شد، این استثنا باید بماند.
+!apps/web/src/assets/fonts/**
+
+# Graphify knowledge-graph output (graph.html / graph.json / GRAPH_REPORT.md).
+# Regenerated from source on demand, so it is build output, not source of truth.
+# NOTE: the `out/` rule above does NOT cover this — gitignore matches whole path
+# segments, and `graphify-out` is a different segment than `out`.
+graphify-out/
+
+# Embedded Postgres data directory created by `node scripts/dev-db.mjs start`.
+# It is a live database cluster (~1400 binary files), not source: committing it
+# would leak local test data and make every run produce a huge diff.
+# Recreate with `dev-db.mjs start` + `prisma migrate deploy`.
+.dev-db/
+
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Editor / tooling local state, not source.
+# .vs contains a SQLite workspace database; .context-bridge and parts of
+# .v3code are per-machine agent caches that would churn on every session.
+.vs/
+.context-bridge/
+.v3code/active-plan.json
+.v3code/workspace-id

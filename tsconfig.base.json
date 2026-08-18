@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    /* node16 + no "type":"module" in package.json => CommonJS output, which is
+       what NestJS needs, while avoiding the deprecated node10 resolver. */
+    "module": "node16",
+    "moduleResolution": "node16",
+    "declaration": true,
+    "sourceMap": true,
+    "incremental": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    /* Strictness: production-grade. Every relaxation here becomes a runtime bug
+       in a financial/multi-tenant system, so none of these get turned off. */
+    "strict": true,
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* `exactOptionalPropertyTypes` is intentionally OFF: Prisma's generated
+       update inputs rely on `field?: T | undefined` semantics and fight it. */
+    "exactOptionalPropertyTypes": false,
+
+    /* No `baseUrl` (deprecated in TS 7) and no cross-package path mapping:
+       workspace packages resolve through node_modules symlinks to their built
+       output, wired with TypeScript project references in each app. */
+  },
+  "exclude": ["node_modules", "dist", ".next"]
+}

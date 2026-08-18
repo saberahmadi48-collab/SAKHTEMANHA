@@ -1,0 +1,22 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec\\.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/tsconfig.e2e.json"
+      }
+    ]
+  },
+  "moduleNameMapper": {
+    "^@bops/contracts$": "<rootDir>/../../../packages/contracts/src/index.ts",
+    "^@bops/i18n$": "<rootDir>/../../../packages/i18n/src/index.ts"
+  },
+  "setupFilesAfterEnv": ["<rootDir>/setup-e2e.ts"],
+  "testTimeout": 60000,
+  "maxWorkers": 1,
+  "forceExit": true
+}

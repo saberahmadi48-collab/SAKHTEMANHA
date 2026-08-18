@@ -1,0 +1,33 @@
+{
+  "name": "building-ops-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant Building Operations Platform — modular monolith (NestJS) + Next.js web client",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "api:dev": "npm run start:dev --workspace @bops/api",
+    "api:build": "npm run build --workspace @bops/api",
+    "api:test": "npm run test --workspace @bops/api",
+    "db:generate": "npm run prisma:generate --workspace @bops/api",
+    "db:migrate": "npm run prisma:migrate --workspace @bops/api",
+    "db:seed": "npm run prisma:seed --workspace @bops/api",
+    "db:studio": "npm run prisma:studio --workspace @bops/api",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "typecheck": "tsc -b --pretty",
+    "format": "prettier --write \"apps/**/src/**/*.ts\" \"packages/**/src/**/*.ts\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  },
+  "allowScripts": {
+    "@embedded-postgres/windows-x64@18.4.0-beta.17": true
+  }
+}

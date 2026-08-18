@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "composite": true,
+    "declarationMap": true,
+    /* قالب‌بندی تاریخ شمسی و ارقام فارسی روی Intl بنا شده است، نه روی یک
+       کتابخانه‌ی جانبی. تایپ‌های تقویم persian و RelativeTimeFormat در
+       ES2021+ تعریف شده‌اند، پس lib را بالا می‌بریم. */
+    "lib": ["ES2022"]
+  },
+  "include": ["src/**/*.ts"]
+}
