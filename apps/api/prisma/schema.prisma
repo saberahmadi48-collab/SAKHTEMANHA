@@ -344,6 +344,38 @@ enum LedgerReferenceType {
   REVERSAL
 }
 
+/// BM-03 §30. The lifecycle of an external money movement.
+///
+/// SUCCEEDED IS NOT SET BY A CALLBACK. §33 is explicit that returning from a
+/// provider does not prove payment; only server-side verification moves a
+/// payment here, and only a SUCCEEDED payment may settle an obligation (§30).
+/// MANUAL entries are verified by the human who recorded them (§36).
+enum PaymentStatus {
+  CREATED
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  EXPIRED
+  REFUND_PENDING
+  REFUNDED
+  REVERSED
+}
+
+/// BM-03 §31/§36. How the money arrived.
+///
+/// MANUAL is the controlled fallback — a cash or bank transfer the manager
+/// records by hand. It requires an elevated permission and a reference, and it
+/// must never become the primary workflow. Real gateways are added in BM-04
+/// through the provider abstraction; no provider name is hard-coded here.
+enum PaymentMethod {
+  MANUAL_CASH
+  MANUAL_BANK_TRANSFER
+  MANUAL_POS
+  ONLINE_GATEWAY
+  CREDIT_APPLICATION
+}
+
 /// BM-03 §27. Credit is money the unit has already paid that no invoice has
 /// consumed yet — it must never silently vanish (§26).
 enum CreditStatus {
@@ -516,6 +548,7 @@ model Building {
   invoices             Invoice[]
   ledgerEntries        LedgerEntry[]
   unitCredits          UnitCredit[]
+  payments             Payment[]
 
   /// Code is unique per organization, not globally: two management companies
   /// may both use "A1".
@@ -609,6 +642,7 @@ model Unit {
   invoices         Invoice[]
   ledgerEntries    LedgerEntry[]
   credits          UnitCredit[]
+  payments         Payment[]
 
   @@unique([buildingId, label])
   @@index([buildingId, status])
@@ -791,6 +825,7 @@ model Person {
   closedPeriods       FinancialPeriod[] @relation("PeriodClosedBy")
   startedChargeRuns   ChargeRun[]       @relation("ChargeRunStartedBy")
   createdLedgerEntries LedgerEntry[]    @relation("LedgerCreatedBy")
+  recordedPayments    Payment[]         @relation("PaymentRecordedBy")
 
   @@index([lastName, firstName])
   @@index([nationalId])
@@ -1210,6 +1245,7 @@ model FinancialPeriod {
   charges        Charge[]
   invoices       Invoice[]
   ledgerEntries  LedgerEntry[]
+  payments       Payment[]
 
   /// One period per (building, year, month). Total unique is correct here
   /// (unlike the BM-02 membership indexes): a month genuinely happens once.
@@ -1440,6 +1476,7 @@ model Invoice {
   unit            Unit            @relation(fields: [unitId], references: [id])
   financialPeriod FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
   lines           InvoiceLine[]
+  payments        Payment[]
 
   @@unique([buildingId, invoiceNumber])
   @@index([buildingId, status])
@@ -1574,4 +1611,84 @@ model UnitCredit {
   @@index([buildingId, status])
   @@index([unitId, status])
   @@map("unit_credits")
+}
+
+/// BM-03 §29/§35. An external money movement, verified before it counts.
+///
+/// READ THIS BEFORE ADDING A GATEWAY (BM-04):
+///
+///  1. A PAYMENT ROW IS NOT A LEDGER EFFECT (§70: Payment ≠ Ledger Entry). A
+///     payment sits here in CREATED/PENDING recording an INTENT. Only when it
+///     reaches SUCCEEDED does the settlement path post the CREDIT. That is why
+///     `status` and `ledgerEntryId` are separate columns: the second is null
+///     for every payment that has not actually settled anything.
+///
+///  2. `@@unique([provider, providerTransactionId])` IS THE ANTI-DOUBLE-SETTLE
+///     CONSTRAINT (§35). A provider that retries its callback — or a manager who
+///     double-clicks "record payment" with the same receipt number — loses the
+///     race at the database rather than settling the same money twice. It is a
+///     constraint and not a read-then-write check because the check races under
+///     precisely the retry storm it exists to survive (§34).
+///
+///  3. `amount` IS THE SERVER'S NUMBER, NEVER THE CLIENT'S (§63: Client Amount ≠
+///     Trusted Amount). For a gateway it is what verification returned; for a
+///     manual entry it is what the recorder typed, which is why manual entry
+///     needs an elevated permission and an audited reference.
+model Payment {
+  id                String  @id @default(uuid()) @db.Uuid
+  buildingId        String  @db.Uuid
+  unitId            String  @db.Uuid
+  /// Null for money received against the unit's account with no specific
+  /// document — an advance payment that becomes credit (§26).
+  invoiceId         String? @db.Uuid
+  financialPeriodId String  @db.Uuid
+
+  /// Free-form provider key so BM-04 can add gateways without a schema change.
+  /// `MANUAL` for hand-recorded entries (§36).
+  provider              String        @default("MANUAL")
+  /// The provider's own reference, or the receipt/tracking number for a manual
+  /// entry. Half of the anti-duplicate constraint below.
+  providerTransactionId String?
+  method                PaymentMethod @default(MANUAL_BANK_TRANSFER)
+
+  amount   Decimal @db.Decimal(18, 2)
+  currency String  @default("IRR")
+
+  /// How much of `amount` was consumed by the invoice. The remainder became
+  /// credit (§26) — kept as its own column so "why is this 500,000 short?"
+  /// is answerable without recomputing history.
+  settledAmount Decimal @default(0) @db.Decimal(18, 2)
+
+  status PaymentStatus @default(CREATED)
+
+  /// The CREDIT entry this payment produced. Null until verification succeeds —
+  /// the structural expression of "callback ≠ verified payment" (§33).
+  ledgerEntryId String? @db.Uuid
+
+  /// Set when a manual payment was recorded by a human, so §36's "audit creator"
+  /// requirement is answerable from the row itself.
+  recordedByPersonId String? @db.Uuid
+  note               String?
+
+  requestedAt DateTime  @default(now())
+  verifiedAt  DateTime?
+  failedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  building        Building        @relation(fields: [buildingId], references: [id])
+  unit            Unit            @relation(fields: [unitId], references: [id])
+  invoice         Invoice?        @relation(fields: [invoiceId], references: [id])
+  financialPeriod FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
+  recordedByPerson Person?        @relation("PaymentRecordedBy", fields: [recordedByPersonId], references: [id])
+
+  /// §35 — prevents duplicate settlement. Postgres treats NULLs as distinct, so
+  /// this constrains only payments that actually carry a reference; a gateway
+  /// payment mid-flight without one yet is unaffected.
+  @@unique([provider, providerTransactionId])
+  @@index([buildingId, status])
+  @@index([unitId, requestedAt])
+  @@index([invoiceId])
+  @@index([buildingId, financialPeriodId])
+  @@map("payments")
 }

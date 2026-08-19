@@ -5,11 +5,15 @@ import { ChargeGenerationController } from './charge-generation.controller';
 import { ChargeGenerationService } from './charge-generation.service';
 import { ChargeRulesController } from './charge-rules.controller';
 import { ChargeRulesService } from './charge-rules.service';
+import { CreditsController } from './credits.controller';
+import { CreditsService } from './credits.service';
 import { ExtraordinaryChargesController } from './extraordinary-charges.controller';
 import { FinancialPeriodsController } from './financial-periods.controller';
 import { FinancialPeriodsService } from './financial-periods.service';
 import { InvoicesController } from './invoices.controller';
 import { InvoicesService } from './invoices.service';
+import { PaymentsController } from './payments.controller';
+import { PaymentsService } from './payments.service';
 
 /**
  * BM-03 finance — the ledger, the accounting calendar, charge rules, monthly
@@ -38,6 +42,16 @@ import { InvoicesService } from './invoices.service';
  * financial effect — the obligation was already posted when the charge was
  * generated — so a service that could post here would only ever be used to
  * double a resident's balance (§70: Charge ≠ Invoice ≠ Payment).
+ *
+ * THE SETTLEMENT PAIR, and why reading them apart is misleading:
+ * `PaymentsService` posts the FULL amount received as a CREDIT — including the
+ * part no invoice consumed — and records the excess as a UnitCredit.
+ * `CreditsService` then spends that credit against later invoices WITHOUT
+ * posting anything, because the money already hit the ledger when it arrived.
+ * Neither half is correct alone: post twice and the resident is credited money
+ * they never paid; post once but only the settled part and their overpayment
+ * vanishes from the books. Change one and you must change the other in the same
+ * commit.
  */
 @Module({
   controllers: [
@@ -46,12 +60,16 @@ import { InvoicesService } from './invoices.service';
     ChargeGenerationController,
     ExtraordinaryChargesController,
     InvoicesController,
+    PaymentsController,
+    CreditsController,
   ],
   providers: [
     FinancialPeriodsService,
     ChargeRulesService,
     ChargeGenerationService,
     InvoicesService,
+    PaymentsService,
+    CreditsService,
     LedgerService,
   ],
   exports: [
@@ -59,6 +77,8 @@ import { InvoicesService } from './invoices.service';
     ChargeRulesService,
     ChargeGenerationService,
     InvoicesService,
+    PaymentsService,
+    CreditsService,
     LedgerService,
   ],
 })

@@ -36,6 +36,10 @@ const TRUNCATED_TABLES = [
   // BM-03 finance, child-first. These MUST be listed: a finance table left out
   // keeps rows across suites, and the ledger totals a later suite asserts on
   // would silently include another suite's charges.
+  // Before ledger_entries and invoices: a payment references both. Leaving it
+  // out also strands `(provider, providerTransactionId)` rows, so the NEXT
+  // suite's "record a payment" fails on a duplicate reference it never created.
+  'payments',
   'ledger_entries',
   'invoice_lines',
   'invoices',
