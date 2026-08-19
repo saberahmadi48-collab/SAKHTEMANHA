@@ -1,0 +1,14 @@
+-- BM-03 §52: a revised charge rule is SUPERSEDED, not ARCHIVED.
+--
+-- Placed BEFORE 'ARCHIVED' so the type's value order matches the enum order in
+-- schema.prisma; Prisma compares enum member order when detecting drift, and a
+-- mismatch here would show up as permanent phantom drift on every later
+-- migration.
+--
+-- HAND-WRITTEN ON PURPOSE. `prisma migrate dev` cannot be used on this database:
+-- `invoice_number_sequences` and the temporal EXCLUDE constraints are created by
+-- the manual SQL in prisma/sql/, so Prisma always reports drift and offers only
+-- a full destructive reset — which would silently drop exactly those guards.
+-- This file is applied with scripts/db-query.mjs and then registered with
+-- `prisma migrate resolve --applied`.
+ALTER TYPE "ChargeRuleStatus" ADD VALUE IF NOT EXISTS 'SUPERSEDED' BEFORE 'ARCHIVED';

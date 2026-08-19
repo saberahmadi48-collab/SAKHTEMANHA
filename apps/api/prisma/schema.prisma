@@ -290,6 +290,15 @@ enum ChargeRuleStatus {
   DRAFT
   ACTIVE
   SUSPENDED
+
+  /// §52. Replaced by a newer version of the same rule.
+  ///
+  /// Deliberately distinct from ARCHIVED, for the same reason REOPENED is
+  /// distinct from OPEN on a period: a rule that was superseded has a successor
+  /// and its charges are still explainable by following the version chain,
+  /// whereas an ARCHIVED rule was retired outright. Collapsing the two would
+  /// make "why did this stop applying?" unanswerable from the row alone.
+  SUPERSEDED
   ARCHIVED
 }
 
