@@ -5,12 +5,15 @@ import { ChargeGenerationController } from './charge-generation.controller';
 import { ChargeGenerationService } from './charge-generation.service';
 import { ChargeRulesController } from './charge-rules.controller';
 import { ChargeRulesService } from './charge-rules.service';
+import { ExtraordinaryChargesController } from './extraordinary-charges.controller';
 import { FinancialPeriodsController } from './financial-periods.controller';
 import { FinancialPeriodsService } from './financial-periods.service';
+import { InvoicesController } from './invoices.controller';
+import { InvoicesService } from './invoices.service';
 
 /**
- * BM-03 finance — the ledger, the accounting calendar, charge rules and monthly
- * charge generation. Invoicing and payment settlement land in a later slice.
+ * BM-03 finance — the ledger, the accounting calendar, charge rules, monthly
+ * charge generation and invoicing. Payment settlement lands in BM-04.
  *
  * SLICE ORDER, and why it is this way: periods plus the ledger core first, then
  * rules and generation on top of them. Generation is the operation that writes
@@ -29,23 +32,33 @@ import { FinancialPeriodsService } from './financial-periods.service';
  * that boundary visible. Any future module needing to post — payments,
  * expenses — imports FinanceModule and goes through this service, which is what
  * keeps the append-only and closed-period rules true system-wide.
+ *
+ * NOTE ON `InvoicesService`: it does NOT depend on LedgerService, and that
+ * absence is intentional rather than an oversight. Issuing an invoice records no
+ * financial effect — the obligation was already posted when the charge was
+ * generated — so a service that could post here would only ever be used to
+ * double a resident's balance (§70: Charge ≠ Invoice ≠ Payment).
  */
 @Module({
   controllers: [
     FinancialPeriodsController,
     ChargeRulesController,
     ChargeGenerationController,
+    ExtraordinaryChargesController,
+    InvoicesController,
   ],
   providers: [
     FinancialPeriodsService,
     ChargeRulesService,
     ChargeGenerationService,
+    InvoicesService,
     LedgerService,
   ],
   exports: [
     FinancialPeriodsService,
     ChargeRulesService,
     ChargeGenerationService,
+    InvoicesService,
     LedgerService,
   ],
 })
