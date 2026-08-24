@@ -40,6 +40,12 @@ const TRUNCATED_TABLES = [
   // out also strands `(provider, providerTransactionId)` rows, so the NEXT
   // suite's "record a payment" fails on a duplicate reference it never created.
   'payments',
+  // Before ledger_entries: both reference an entry, and `expenses` also holds
+  // the (buildingId, vendorName, invoiceReference) unique — leaving it out
+  // makes the NEXT suite's "enter a supplier bill" collide with a duplicate
+  // reference it never created.
+  'expenses',
+  'incomes',
   'ledger_entries',
   'invoice_lines',
   'invoices',
@@ -48,6 +54,8 @@ const TRUNCATED_TABLES = [
   'charge_runs',
   'charge_rules',
   'unit_credits',
+  // After expenses and incomes, which reference it.
+  'financial_categories',
   'unit_financial_accounts',
   'building_financial_accounts',
   'financial_periods',

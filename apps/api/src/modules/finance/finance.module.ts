@@ -7,9 +7,15 @@ import { ChargeRulesController } from './charge-rules.controller';
 import { ChargeRulesService } from './charge-rules.service';
 import { CreditsController } from './credits.controller';
 import { CreditsService } from './credits.service';
+import { ExpensesController } from './expenses.controller';
+import { ExpensesService } from './expenses.service';
 import { ExtraordinaryChargesController } from './extraordinary-charges.controller';
+import { FinancialCategoriesController } from './financial-categories.controller';
+import { FinancialCategoriesService } from './financial-categories.service';
 import { FinancialPeriodsController } from './financial-periods.controller';
 import { FinancialPeriodsService } from './financial-periods.service';
+import { IncomesController } from './incomes.controller';
+import { IncomesService } from './incomes.service';
 import { InvoicesController } from './invoices.controller';
 import { InvoicesService } from './invoices.service';
 import { PaymentsController } from './payments.controller';
@@ -52,6 +58,17 @@ import { PaymentsService } from './payments.service';
  * they never paid; post once but only the settled part and their overpayment
  * vanishes from the books. Change one and you must change the other in the same
  * commit.
+ *
+ * THE BUILDING SIDE OF THE BOOKS (§38-§42), added last and deliberately kept
+ * separate from everything above it. Expenses and income post with
+ * `unitId = null`, which is the line that stops a supplier bill from landing on
+ * a resident's balance. A lift repair becomes a resident obligation ONLY through
+ * the charge formula (§12) — never by being split across units at the point it
+ * is paid, which would bill them for the same repair twice.
+ *
+ * `ExpensesService` posts to the ledger in exactly ONE method (`pay`). Approval
+ * is a decision and writes nothing; if a later change makes `approve` post, the
+ * building's balance will show money gone before it left the account.
  */
 @Module({
   controllers: [
@@ -62,6 +79,9 @@ import { PaymentsService } from './payments.service';
     InvoicesController,
     PaymentsController,
     CreditsController,
+    FinancialCategoriesController,
+    ExpensesController,
+    IncomesController,
   ],
   providers: [
     FinancialPeriodsService,
@@ -70,6 +90,9 @@ import { PaymentsService } from './payments.service';
     InvoicesService,
     PaymentsService,
     CreditsService,
+    FinancialCategoriesService,
+    ExpensesService,
+    IncomesService,
     LedgerService,
   ],
   exports: [
@@ -79,6 +102,9 @@ import { PaymentsService } from './payments.service';
     InvoicesService,
     PaymentsService,
     CreditsService,
+    FinancialCategoriesService,
+    ExpensesService,
+    IncomesService,
     LedgerService,
   ],
 })

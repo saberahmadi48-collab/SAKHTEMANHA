@@ -342,6 +342,12 @@ enum LedgerReferenceType {
   CREDIT_APPLICATION
   OPENING_BALANCE
   REVERSAL
+  /// BM-03 §38/§41 — the building side of the books. Both are written with
+  /// `unitId = null`, which is what keeps a supplier bill out of every
+  /// resident's balance: a lift repair is a BUILDING debit, and it reaches
+  /// residents only through the charge formula (§12), never directly.
+  EXPENSE
+  INCOME
 }
 
 /// BM-03 §30. The lifecycle of an external money movement.
@@ -391,6 +397,47 @@ enum FinancialAccountStatus {
   ACTIVE
   SUSPENDED
   CLOSED
+}
+
+/// BM-03 §42. Which side of the books a category belongs to.
+///
+/// A category is bound to one direction for life. Letting "Elevator" be an
+/// expense in one month and income the next would make every period comparison
+/// meaningless, and no report could state what a category total means.
+enum FinancialCategoryKind {
+  INCOME
+  EXPENSE
+}
+
+/// BM-03 §39. The approval chain a building expense walks.
+///
+/// DRAFT and SUBMITTED carry NO financial effect — they are a request, not a
+/// commitment. Only PAID posts to the ledger, which is why the money leaving the
+/// building is a distinct step from someone agreeing it should leave.
+/// REJECTED and CANCELLED are terminal and deliberately distinct: rejected means
+/// an approver refused it, cancelled means the requester withdrew it, and a
+/// building arguing about a supplier needs to tell those apart.
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+}
+
+/// BM-03 §41. Where a recorded income came from.
+///
+/// CHARGE and INVOICE are deliberately ABSENT: monthly charge income already
+/// enters the books through the charge/invoice/payment path, and recording it
+/// here as well would count the same rial twice in every report. This enum is
+/// for money that arrives OUTSIDE that pipeline.
+enum IncomeSourceType {
+  RENTAL
+  PENALTY
+  DEPOSIT
+  SUBSIDY
+  OTHER
 }
 
 // ============================================================================
@@ -549,6 +596,9 @@ model Building {
   ledgerEntries        LedgerEntry[]
   unitCredits          UnitCredit[]
   payments             Payment[]
+  financialCategories  FinancialCategory[]
+  expenses             Expense[]
+  incomes              Income[]
 
   /// Code is unique per organization, not globally: two management companies
   /// may both use "A1".
@@ -826,6 +876,9 @@ model Person {
   startedChargeRuns   ChargeRun[]       @relation("ChargeRunStartedBy")
   createdLedgerEntries LedgerEntry[]    @relation("LedgerCreatedBy")
   recordedPayments    Payment[]         @relation("PaymentRecordedBy")
+  createdExpenses     Expense[]         @relation("ExpenseCreatedBy")
+  approvedExpenses    Expense[]         @relation("ExpenseApprovedBy")
+  recordedIncomes     Income[]          @relation("IncomeRecordedBy")
 
   @@index([lastName, firstName])
   @@index([nationalId])
@@ -1246,6 +1299,8 @@ model FinancialPeriod {
   invoices       Invoice[]
   ledgerEntries  LedgerEntry[]
   payments       Payment[]
+  expenses       Expense[]
+  incomes        Income[]
 
   /// One period per (building, year, month). Total unique is correct here
   /// (unlike the BM-02 membership indexes): a month genuinely happens once.
@@ -1691,4 +1746,167 @@ model Payment {
   @@index([invoiceId])
   @@index([buildingId, financialPeriodId])
   @@map("payments")
+}
+
+/// BM-03 §42. A configurable income/expense category.
+///
+/// CATEGORIES ARE DATA, NOT CODE. §42 says so outright ("do not hard-code all
+/// categories in business logic"), and the reason is that every building's chart
+/// of accounts differs — one has a doorman and a pool, the next has neither.
+/// A hard-coded list would force a deploy to add "Generator Fuel".
+///
+/// `systemKey` is the one concession: a small set of seeded categories carry a
+/// stable key so reports can find "the cleaning bucket" without matching on a
+/// Persian display name the manager is free to rename. A null key means the
+/// manager invented this category, and nothing in code may depend on it.
+model FinancialCategory {
+  id         String @id @default(uuid()) @db.Uuid
+  buildingId String @db.Uuid
+
+  kind FinancialCategoryKind
+  /// Display name, manager-editable, Persian.
+  name String
+  /// Stable machine key for seeded categories (e.g. `cleaning`). Null for
+  /// manager-created ones — code must never branch on a null key.
+  systemKey String?
+
+  description String?
+  /// Retired rather than deleted: historical expenses keep pointing at it, so
+  /// removing the row would orphan last year's books.
+  isActive Boolean @default(true)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building  @relation(fields: [buildingId], references: [id])
+  expenses Expense[]
+  incomes  Income[]
+
+  /// Two categories with the same name on the same side of the books are a data
+  /// entry mistake, and one that quietly splits a building's reporting in half.
+  @@unique([buildingId, kind, name])
+  @@unique([buildingId, systemKey])
+  @@index([buildingId, kind, isActive])
+  @@map("financial_categories")
+}
+
+/// BM-03 §38/§39. A building expense — money the building spends.
+///
+/// LEDGER EFFECT HAPPENS EXACTLY ONCE, AT `markPaid`, AND NOWHERE ELSE.
+/// Approving an expense is a decision; paying it is a financial event. Posting
+/// at approval would show money gone before it left the account, and posting at
+/// both would double every supplier bill.
+///
+/// The entry is written with `unitId = null` — a building-level DEBIT (§7).
+/// It deliberately does NOT touch any unit's balance: a resident owes their
+/// charge, and the charge formula is what turns building costs into resident
+/// obligations (§12). Splitting an expense across units here would bill them a
+/// second time for the same lift repair.
+model Expense {
+  id                String  @id @default(uuid()) @db.Uuid
+  buildingId        String  @db.Uuid
+  categoryId        String  @db.Uuid
+  /// The period the expense is ACCOUNTED to. Set at creation from expenseDate,
+  /// and re-resolved at payment time if that month has since been sealed (§10).
+  financialPeriodId String? @db.Uuid
+
+  vendorName  String
+  description String
+  /// The supplier's own invoice/receipt number. Half of the anti-duplicate
+  /// constraint below.
+  invoiceReference String?
+
+  amount   Decimal @db.Decimal(18, 2)
+  currency String  @default("IRR")
+
+  expenseDate DateTime @db.Timestamptz(6)
+
+  status ExpenseStatus @default(DRAFT)
+
+  /// The building-level DEBIT this expense produced. Null until PAID — the
+  /// structural expression of "approved ≠ paid".
+  ledgerEntryId String? @db.Uuid
+
+  createdByPersonId  String? @db.Uuid
+  /// §39 — approval authority is role-based, and who exercised it is answerable
+  /// from the row itself rather than only from the audit log.
+  approvedByPersonId String? @db.Uuid
+  /// Mandatory when status is REJECTED. A refusal without a reason is not a
+  /// decision anyone can act on.
+  decisionReason String?
+
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  building        Building          @relation(fields: [buildingId], references: [id])
+  category        FinancialCategory @relation(fields: [categoryId], references: [id])
+  financialPeriod FinancialPeriod?  @relation(fields: [financialPeriodId], references: [id])
+  createdByPerson Person?           @relation("ExpenseCreatedBy", fields: [createdByPersonId], references: [id])
+  approvedByPerson Person?          @relation("ExpenseApprovedBy", fields: [approvedByPersonId], references: [id])
+
+  /// The same supplier invoice must not be paid twice. Postgres treats NULLs as
+  /// distinct, so an expense with no reference yet is unconstrained — the guard
+  /// binds only once a real document number exists.
+  @@unique([buildingId, vendorName, invoiceReference])
+  @@index([buildingId, status])
+  @@index([buildingId, expenseDate])
+  @@index([buildingId, financialPeriodId])
+  @@index([categoryId])
+  @@map("expenses")
+}
+
+/// BM-03 §41. Building income recorded OUTSIDE the charge pipeline.
+///
+/// WHAT THIS IS NOT: it is not where monthly charges land. Charge income already
+/// reaches the books as Charge → Invoice → Payment → ledger CREDIT, and
+/// mirroring it here would count it twice in every report. This model exists for
+/// the rooftop antenna rent and the hall-hire fee — money with no unit
+/// obligation behind it.
+///
+/// Recording income posts a building-level CREDIT immediately (`unitId = null`),
+/// because unlike an expense there is no approval chain: the money is already in
+/// hand when someone records it.
+model Income {
+  id                String @id @default(uuid()) @db.Uuid
+  buildingId        String @db.Uuid
+  categoryId        String @db.Uuid
+  financialPeriodId String @db.Uuid
+
+  amount   Decimal @db.Decimal(18, 2)
+  currency String  @default("IRR")
+
+  receivedAt DateTime @db.Timestamptz(6)
+
+  sourceType IncomeSourceType @default(OTHER)
+  /// Free-form pointer at the originating document (a lease id, a receipt
+  /// number). Not a foreign key: the referenced thing often lives outside
+  /// finance, and a hard FK here would couple the books to every future module.
+  referenceType String?
+  referenceId   String?
+
+  description String
+
+  /// The building-level CREDIT this income produced. Always set — income has no
+  /// pending state.
+  ledgerEntryId String? @db.Uuid
+
+  recordedByPersonId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building        Building          @relation(fields: [buildingId], references: [id])
+  category        FinancialCategory @relation(fields: [categoryId], references: [id])
+  financialPeriod FinancialPeriod   @relation(fields: [financialPeriodId], references: [id])
+  recordedByPerson Person?          @relation("IncomeRecordedBy", fields: [recordedByPersonId], references: [id])
+
+  @@index([buildingId, receivedAt])
+  @@index([buildingId, financialPeriodId])
+  @@index([categoryId])
+  @@map("incomes")
 }

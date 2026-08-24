@@ -69,6 +69,27 @@ export const PERMISSIONS = {
   PAYMENT_RECORD: 'payment:record',
   /** Read one's OWN unit ledger. Every resident holds this. */
   OWN_LEDGER_READ: 'own_ledger:read',
+  EXPENSE_READ: 'expense:read',
+  /** Enter a supplier bill. Carries NO authority to approve it. */
+  EXPENSE_CREATE: 'expense:create',
+  /**
+   * Approve or reject a submitted expense (§39).
+   *
+   * Deliberately SEPARATE from EXPENSE_CREATE, and this separation is the whole
+   * control: whoever types "پرداخت به پیمانکار — ۵۰ میلیون" must not be the same
+   * authority that blesses it. Merging the two would let one officeholder move
+   * building money end-to-end with no second pair of eyes, which is exactly the
+   * fraud §63 is written against.
+   */
+  EXPENSE_APPROVE: 'expense:approve',
+  /** Record that an approved expense actually left the account — the only step
+   *  that posts to the ledger. */
+  EXPENSE_PAY: 'expense:pay',
+  INCOME_READ: 'income:read',
+  INCOME_RECORD: 'income:record',
+  /** Configure the building's chart of accounts (§42). */
+  FINANCIAL_CATEGORY_READ: 'financial_category:read',
+  FINANCIAL_CATEGORY_MANAGE: 'financial_category:manage',
 
   // --- BM-05: maintenance ---------------------------------------------------
   WORKORDER_READ: 'workorder:read',
@@ -161,6 +182,19 @@ export const BUILDING_ROLE_PERMISSIONS: Readonly<
     P.INVOICE_ISSUE,
     P.PAYMENT_READ,
     P.PAYMENT_RECORD,
+    P.EXPENSE_READ,
+    P.EXPENSE_CREATE,
+    // NOTE the absence of EXPENSE_APPROVE. The manager runs the building's
+    // spending — enters the bill and pays it once approved — but does not get to
+    // approve their own spend. §39 wants role-based approval authority, and an
+    // authority that approves what it authored is not a control. The board holds
+    // it instead; an org admin can still do both, which is the deliberate
+    // escape hatch for a self-managed single building.
+    P.EXPENSE_PAY,
+    P.INCOME_READ,
+    P.INCOME_RECORD,
+    P.FINANCIAL_CATEGORY_READ,
+    P.FINANCIAL_CATEGORY_MANAGE,
     P.WORKORDER_ASSIGN,
     P.WORKORDER_CLOSE,
     P.ANNOUNCEMENT_PUBLISH,
@@ -182,6 +216,13 @@ export const BUILDING_ROLE_PERMISSIONS: Readonly<
     P.CHARGE_READ,
     P.INVOICE_READ,
     P.PAYMENT_READ,
+    P.EXPENSE_READ,
+    // The board's financial teeth: it approves what the manager proposes to
+    // spend, and cannot enter or pay an expense itself. Both halves matter — a
+    // board that could also create and pay would be a second unchecked spender.
+    P.EXPENSE_APPROVE,
+    P.INCOME_READ,
+    P.FINANCIAL_CATEGORY_READ,
     P.WORKORDER_ASSIGN,
     P.ANNOUNCEMENT_PUBLISH,
     P.DOCUMENT_UPLOAD,
@@ -198,6 +239,12 @@ export const BUILDING_ROLE_PERMISSIONS: Readonly<
     P.CHARGE_READ,
     P.INVOICE_READ,
     P.PAYMENT_READ,
+    // Read-only over spending too: no EXPENSE_APPROVE, no EXPENSE_PAY, no
+    // INCOME_RECORD. An auditor who can approve the spend they audit is not an
+    // auditor.
+    P.EXPENSE_READ,
+    P.INCOME_READ,
+    P.FINANCIAL_CATEGORY_READ,
     P.AUDIT_READ,
   ],
 
@@ -232,6 +279,13 @@ export const ORGANIZATION_ROLE_PERMISSIONS: Readonly<
     P.INVOICE_ISSUE,
     P.PAYMENT_READ,
     P.PAYMENT_RECORD,
+    P.EXPENSE_READ,
+    P.EXPENSE_CREATE,
+    P.EXPENSE_PAY,
+    P.INCOME_READ,
+    P.INCOME_RECORD,
+    P.FINANCIAL_CATEGORY_READ,
+    P.FINANCIAL_CATEGORY_MANAGE,
   ],
   ORG_VIEWER: [
     P.BUILDING_READ,
@@ -242,6 +296,9 @@ export const ORGANIZATION_ROLE_PERMISSIONS: Readonly<
     P.CHARGE_READ,
     P.INVOICE_READ,
     P.PAYMENT_READ,
+    P.EXPENSE_READ,
+    P.INCOME_READ,
+    P.FINANCIAL_CATEGORY_READ,
     P.WORKORDER_READ,
     P.ANNOUNCEMENT_READ,
     P.DOCUMENT_READ,
