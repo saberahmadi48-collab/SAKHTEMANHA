@@ -440,6 +440,18 @@ enum IncomeSourceType {
   OTHER
 }
 
+/// BM-03 §44/§46. Lifecycle of a controlled correction.
+///
+/// Deliberately two states, not more: an adjustment either stands (POSTED) or
+/// has been undone by a reversal (REVERSED). There is no DRAFT — the
+/// CHARGE_ADJUST permission itself is the authorization gate, and there is no
+/// DELETE — §46 forbids erasing the original financial event, so "undo" is
+/// always a new reversal, never a status that makes the row disappear.
+enum AdjustmentStatus {
+  POSTED
+  REVERSED
+}
+
 // ============================================================================
 //  BM-01 — ORGANIZATION / BUILDING / UNIT / ADDRESS / LOCATION / TERM
 // ============================================================================
@@ -599,6 +611,7 @@ model Building {
   financialCategories  FinancialCategory[]
   expenses             Expense[]
   incomes              Income[]
+  adjustments          Adjustment[]
 
   /// Code is unique per organization, not globally: two management companies
   /// may both use "A1".
@@ -693,6 +706,7 @@ model Unit {
   ledgerEntries    LedgerEntry[]
   credits          UnitCredit[]
   payments         Payment[]
+  adjustments      Adjustment[]
 
   @@unique([buildingId, label])
   @@index([buildingId, status])
@@ -879,6 +893,8 @@ model Person {
   createdExpenses     Expense[]         @relation("ExpenseCreatedBy")
   approvedExpenses    Expense[]         @relation("ExpenseApprovedBy")
   recordedIncomes     Income[]          @relation("IncomeRecordedBy")
+  createdAdjustments  Adjustment[]      @relation("AdjustmentCreatedBy")
+  reversedAdjustments Adjustment[]      @relation("AdjustmentReversedBy")
 
   @@index([lastName, firstName])
   @@index([nationalId])
@@ -1301,6 +1317,7 @@ model FinancialPeriod {
   payments       Payment[]
   expenses       Expense[]
   incomes        Income[]
+  adjustments    Adjustment[]
 
   /// One period per (building, year, month). Total unique is correct here
   /// (unlike the BM-02 membership indexes): a month genuinely happens once.
@@ -1909,4 +1926,74 @@ model Income {
   @@index([buildingId, financialPeriodId])
   @@index([categoryId])
   @@map("incomes")
+}
+
+/// BM-03 §44/§46. A controlled, non-destructive correction to a unit or the
+/// building's books — a wrong charge, a mis-applied fee, a manual balance fix
+/// that is neither a payment nor an expense.
+///
+/// WHY THIS EXISTS SEPARATELY FROM `reverse` ON THE LEDGER: `LedgerService.
+/// reverse` undoes a SPECIFIC prior entry by mirroring it exactly. An
+/// adjustment is different — it is a NEW financial fact with its own reason,
+/// not the undoing of an old one ("the elevator charge formula shorted unit 4
+/// by 50,000 last month" is a fresh correction, not a reversal of anything).
+///
+/// ONE LEDGER EFFECT PER ADJUSTMENT, POSTED AT CREATION. Unlike Expense there
+/// is no approval chain to gate the post — CHARGE_ADJUST is itself the
+/// elevated permission §44 asks for, held only by BUILDING_MANAGER and the org
+/// tier (see packages/contracts/permissions.ts). `direction` states the effect
+/// explicitly, the same discipline as every other entry in this domain: never
+/// infer a sign from a bare amount.
+///
+/// UNDO IS A REVERSAL, NEVER A DELETE (§46). `reversalEntryId` records the
+/// ledger reversal this adjustment produced when withdrawn; the row itself
+/// stays forever, moving to REVERSED rather than disappearing.
+model Adjustment {
+  id                String  @id @default(uuid()) @db.Uuid
+  buildingId        String  @db.Uuid
+  /// Null for a building-level adjustment (e.g. correcting a mis-posted
+  /// expense) — the same convention as Expense/Income.
+  unitId            String? @db.Uuid
+  financialPeriodId String  @db.Uuid
+
+  direction LedgerDirection
+  amount    Decimal         @db.Decimal(18, 2)
+  currency  String          @default("IRR")
+
+  /// Mandatory — an adjustment with no reason is indistinguishable from a
+  /// silent edit, exactly what §44 forbids.
+  reason String
+
+  /// Free-form pointer at what this corrects (a charge id, an invoice number
+  /// typed by hand). Not a foreign key: the referenced thing may be a figure
+  /// entered before this system existed.
+  referenceType String?
+  referenceId   String?
+
+  status AdjustmentStatus @default(POSTED)
+
+  /// The ledger entry this adjustment posted. Always set — unlike Expense,
+  /// there is no pending state; the permission check IS the approval.
+  ledgerEntryId    String  @db.Uuid
+  /// Set only once REVERSED, pointing at the ledger reversal entry.
+  reversalEntryId  String? @db.Uuid
+  reversalReason   String?
+  reversedAt       DateTime?
+  reversedByPersonId String? @db.Uuid
+
+  createdByPersonId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building         Building        @relation(fields: [buildingId], references: [id])
+  unit             Unit?           @relation(fields: [unitId], references: [id])
+  financialPeriod  FinancialPeriod @relation(fields: [financialPeriodId], references: [id])
+  createdByPerson  Person?         @relation("AdjustmentCreatedBy", fields: [createdByPersonId], references: [id])
+  reversedByPerson Person?         @relation("AdjustmentReversedBy", fields: [reversedByPersonId], references: [id])
+
+  @@index([buildingId, status])
+  @@index([unitId, status])
+  @@index([buildingId, financialPeriodId])
+  @@map("adjustments")
 }
