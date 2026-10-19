@@ -19,7 +19,6 @@
 
 import EmbeddedPostgres from 'embedded-postgres';
 import { existsSync, mkdirSync } from 'node:fs';
-import { createConnection } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,29 +26,38 @@ const here = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(here, '..');
 const dataDir = resolve(apiRoot, '.dev-db');
 
-const PORT = 5432;
-const USER = 'bops';
-const PASSWORD = 'bops_dev_password';
-const DATABASE = 'bops';
+const HOST = process.env.POSTGRES_HOST ?? '127.0.0.1';
+const PORT = Number(process.env.POSTGRES_PORT ?? 5432);
+const USER = process.env.POSTGRES_USER ?? 'bops';
+const PASSWORD = process.env.POSTGRES_PASSWORD ?? 'bops_dev_password';
+const DATABASE = process.env.POSTGRES_DB ?? 'bops';
 
-/** True when something is already listening — the script is safely re-runnable. */
-async function isPortOpen(port) {
-  return new Promise((resolvePromise) => {
-    const socket = createConnection({ host: '127.0.0.1', port });
-    const finish = (result) => {
-      socket.destroy();
-      resolvePromise(result);
-    };
-    socket.setTimeout(1500);
-    socket.on('connect', () => finish(true));
-    socket.on('timeout', () => finish(false));
-    socket.on('error', () => finish(false));
-  });
+/** True when the PostgreSQL server is actually accepting the project's auth and schema URL. */
+async function isDatabaseReachable() {
+  try {
+    const { Client } = await import('pg');
+    const client = new Client({
+      host: HOST,
+      port: PORT,
+      user: USER,
+      password: PASSWORD,
+      database: DATABASE,
+      connectionTimeoutMillis: 1500,
+      statement_timeout: 1500,
+    });
+
+    await client.connect();
+    await client.query('SELECT 1');
+    await client.end();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function start() {
-  if (await isPortOpen(PORT)) {
-    console.log(`[dev-db] already listening on ${PORT} — reusing it`);
+  if (await isDatabaseReachable()) {
+    console.log(`[dev-db] PostgreSQL is reachable on ${PORT} — reusing it`);
     return;
   }
 
@@ -83,7 +91,7 @@ async function start() {
   }
 
   await pg.start();
-  console.log(`[dev-db] server up on 127.0.0.1:${PORT}`);
+  console.log(`[dev-db] server up on ${HOST}:${PORT}`);
 
   try {
     await pg.createDatabase(DATABASE);
@@ -130,9 +138,9 @@ async function start() {
 }
 
 async function status() {
-  const open = await isPortOpen(PORT);
-  console.log(open ? `[dev-db] listening on ${PORT}` : '[dev-db] not running');
-  process.exit(open ? 0 : 1);
+  const ready = await isDatabaseReachable();
+  console.log(ready ? `[dev-db] PostgreSQL reachable on ${PORT}` : '[dev-db] not ready');
+  process.exit(ready ? 0 : 1);
 }
 
 const command = process.argv[2] ?? 'start';

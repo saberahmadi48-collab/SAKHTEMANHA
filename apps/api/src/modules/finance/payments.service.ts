@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,6 +14,11 @@ import { TenantScopedRepository } from '../../core/database/tenant-scoped.reposi
 import { LedgerService } from '../../core/finance/ledger.service';
 import { isPositive, toAmount, toDecimal } from '../../core/finance/money';
 import { FinancialPeriodsService } from './financial-periods.service';
+import {
+  PAYMENT_PROVIDER_ADAPTER,
+  type PaymentProviderAdapter,
+  type SupportedProviderName,
+} from './payment-provider.adapter';
 import type {
   ListPaymentsQueryDto,
   PaymentResponse,
@@ -72,6 +78,8 @@ export class PaymentsService extends TenantScopedRepository {
     private readonly audit: AuditService,
     private readonly ledger: LedgerService,
     private readonly periods: FinancialPeriodsService,
+    @Inject(PAYMENT_PROVIDER_ADAPTER)
+    private readonly providerAdapter: PaymentProviderAdapter,
   ) {
     super();
   }
@@ -278,6 +286,298 @@ export class PaymentsService extends TenantScopedRepository {
     }
   }
 
+  async createProviderIntent(
+    scope: RequestScope,
+    dto: {
+      provider: string;
+      unitId: string;
+      invoiceId: string;
+      idempotencyKey: string;
+      note?: string;
+    },
+  ): Promise<
+    import('./dto/payment.dto').ProviderPaymentIntentResponse
+  > {
+    const provider = normalizeProviderName(dto.provider);
+    if (!provider) {
+      throw new ConflictException(ERRORS.paymentProviderUnsupported);
+    }
+
+    const idempotencyKey = dto.idempotencyKey?.trim();
+    if (!idempotencyKey) {
+      throw new ConflictException(ERRORS.paymentIntentIdempotencyRequired);
+    }
+
+    await this.assertUnitBelongs(scope, dto.unitId);
+    const invoice = await this.loadSettleableInvoice(scope, dto.invoiceId, dto.unitId);
+    if (invoice.balance.lessThanOrEqualTo(0)) {
+      throw new ConflictException(ERRORS.invoiceAlreadyPaid);
+    }
+
+    const existing = await this.prisma.payment.findFirst({
+      where: {
+        buildingId: scope.buildingId!,
+        provider,
+        providerTransactionId: idempotencyKey,
+      },
+    });
+    if (existing) {
+      return toProviderPaymentIntentResponse(existing);
+    }
+
+    const created = await this.prisma.payment.create({
+      data: {
+        buildingId: scope.buildingId!,
+        unitId: dto.unitId,
+        invoiceId: invoice.id,
+        financialPeriodId: invoice.financialPeriodId,
+        provider,
+        providerTransactionId: idempotencyKey,
+        method: 'ONLINE_GATEWAY',
+        amount: invoice.balance,
+        settledAmount: new Prisma.Decimal(0),
+        status: 'CREATED',
+        recordedByPersonId: scope.personId ?? null,
+        note: dto.note ?? null,
+      },
+    });
+
+    return toProviderPaymentIntentResponse(created);
+  }
+
+  async reconcileProviderTransaction(
+    scope: RequestScope,
+    provider: SupportedProviderName,
+    providerTransactionId: string,
+  ): Promise<
+    import('./dto/payment.dto').ProviderPaymentIntentResponse
+  > {
+    const normalizedReference = providerTransactionId?.trim();
+    if (!normalizedReference) {
+      throw new ConflictException(ERRORS.paymentTransactionUnknown);
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        buildingId: scope.buildingId!,
+        provider,
+        providerTransactionId: normalizedReference,
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException(ERRORS.paymentTransactionUnknown);
+    }
+
+    const verification = await this.providerAdapter.verifyTransaction({
+      provider,
+      buildingId: scope.buildingId!,
+      unitId: payment.unitId,
+      invoiceId: payment.invoiceId,
+      amount: payment.amount,
+      currency: payment.currency,
+      providerTransactionId: normalizedReference,
+      idempotencyKey: payment.providerTransactionId ?? normalizedReference,
+    });
+
+    if (verification.status === 'PENDING') {
+      const updated = await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: 'PENDING',
+          note: verification.note ?? payment.note,
+          verifiedAt: verification.verifiedAt,
+        },
+      });
+      return toProviderPaymentIntentResponse(updated);
+    }
+
+    if (
+      verification.status === 'FAILED' ||
+      verification.status === 'CANCELLED' ||
+      verification.status === 'EXPIRED' ||
+      verification.status === 'REVERSED'
+    ) {
+      const updated = await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: verification.status,
+          failedAt: verification.verifiedAt,
+          note: verification.note ?? payment.note,
+          verifiedAt: verification.verifiedAt,
+        },
+      });
+      return toProviderPaymentIntentResponse(updated);
+    }
+
+    if (verification.currency !== payment.currency) {
+      throw new ConflictException(ERRORS.paymentCurrencyMismatch);
+    }
+
+    if (!verification.amount.equals(payment.amount)) {
+      throw new ConflictException(ERRORS.paymentAmountMismatch);
+    }
+
+    if (payment.status === 'SUCCEEDED') {
+      return toProviderPaymentIntentResponse(payment);
+    }
+
+    if (!payment.invoiceId) {
+      const updated = await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: 'SUCCEEDED',
+          verifiedAt: verification.verifiedAt,
+          note: verification.note ?? payment.note,
+        },
+      });
+      return toProviderPaymentIntentResponse(updated);
+    }
+
+    const invoice = await this.loadSettleableInvoice(
+      scope,
+      payment.invoiceId,
+      payment.unitId,
+    );
+    const settled = minOf(payment.amount, invoice.balance);
+    const overpaid = payment.amount.minus(settled);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.payment.findUnique({
+        where: { id: payment.id },
+        select: { status: true, ledgerEntryId: true },
+      });
+
+      if (current?.status === 'SUCCEEDED' || current?.ledgerEntryId) {
+        return { payment: await tx.payment.findUniqueOrThrow({ where: { id: payment.id } }), invoice: null };
+      }
+
+      const entry = await this.ledger.post(tx, scope, {
+        unitId: payment.unitId,
+        financialPeriodId: payment.financialPeriodId,
+        direction: 'CREDIT',
+        amount: payment.amount,
+        referenceType: 'PAYMENT',
+        referenceId: payment.id,
+        description: `پرداخت آنلاین ${provider}`,
+        idempotencyKey: `payment:${provider}:${verification.providerTransactionId}`,
+      });
+
+      const updated = await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          providerTransactionId: verification.providerTransactionId,
+          settledAmount: settled,
+          status: 'SUCCEEDED',
+          verifiedAt: verification.verifiedAt,
+          ledgerEntryId: entry.id,
+          note: verification.note ?? payment.note,
+        },
+      });
+
+      const paidAmount = invoice.paidAmount.plus(settled);
+      const balance = invoice.total.minus(paidAmount);
+      const updatedInvoice = await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount,
+          balance,
+          status: balance.lessThanOrEqualTo(0) ? 'PAID' : 'PARTIALLY_PAID',
+          paidAt: balance.lessThanOrEqualTo(0) ? new Date() : null,
+        },
+      });
+
+      if (isPositive(overpaid)) {
+        await tx.unitCredit.create({
+          data: {
+            buildingId: scope.buildingId!,
+            unitId: payment.unitId,
+            amount: overpaid,
+            remainingAmount: overpaid,
+            status: 'AVAILABLE',
+            sourceReferenceType: 'PAYMENT',
+            sourceReferenceId: payment.id,
+            note: 'مازاد پرداخت آنلاین',
+          },
+        });
+      }
+
+      await this.audit.logInTransaction(tx, scope, {
+        action: 'finance.payment.provider_verified',
+        resourceType: 'Payment',
+        resourceId: payment.id,
+        before: { status: payment.status },
+        after: {
+          status: 'SUCCEEDED',
+          provider,
+          providerTransactionId: verification.providerTransactionId,
+          ledgerEntryId: entry.id,
+        },
+      });
+
+      return { payment: updated, invoice: updatedInvoice };
+    });
+
+    return toProviderPaymentIntentResponse({
+      ...result.payment,
+      invoice: result.invoice
+        ? { status: result.invoice.status, balance: result.invoice.balance }
+        : null,
+    });
+  }
+
+  async verifyProviderIntent(
+    scope: RequestScope,
+    dto: {
+      provider: string;
+      idempotencyKey: string;
+      providerTransactionId: string;
+    },
+  ): Promise<
+    import('./dto/payment.dto').ProviderPaymentIntentResponse
+  > {
+    const provider = normalizeProviderName(dto.provider);
+    if (!provider) {
+      throw new ConflictException(ERRORS.paymentProviderUnsupported);
+    }
+
+    const idempotencyKey = dto.idempotencyKey?.trim();
+    const providerTransactionId = dto.providerTransactionId?.trim();
+    if (!idempotencyKey || !providerTransactionId) {
+      throw new ConflictException(ERRORS.paymentIntentIdempotencyRequired);
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        buildingId: scope.buildingId!,
+        provider,
+        OR: [
+          { providerTransactionId: idempotencyKey },
+          { providerTransactionId: providerTransactionId },
+        ],
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException(ERRORS.paymentTransactionUnknown);
+    }
+
+    if (payment.status === 'SUCCEEDED') {
+      return toProviderPaymentIntentResponse(payment);
+    }
+
+    if (
+      payment.status === 'FAILED' ||
+      payment.status === 'CANCELLED' ||
+      payment.status === 'EXPIRED' ||
+      payment.status === 'REVERSED'
+    ) {
+      return toProviderPaymentIntentResponse(payment);
+    }
+
+    return this.reconcileProviderTransaction(scope, provider, providerTransactionId);
+  }
+
   /**
    * Reverses a settled payment — a bounced cheque, a mis-keyed receipt (§46).
    *
@@ -469,6 +769,31 @@ function minOf(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
 
 function maxOf(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
   return a.greaterThan(b) ? a : b;
+}
+
+function normalizeProviderName(provider: string): 'AP' | '724' | null {
+  const normalized = provider?.trim();
+  if (normalized === 'AP' || normalized === '724') return normalized;
+  return null;
+}
+
+function toProviderPaymentIntentResponse(
+  payment: PaymentRow,
+): import('./dto/payment.dto').ProviderPaymentIntentResponse {
+  return {
+    id: payment.id,
+    unitId: payment.unitId,
+    invoiceId: payment.invoiceId,
+    financialPeriodId: payment.financialPeriodId,
+    provider: payment.provider,
+    providerTransactionId: payment.providerTransactionId,
+    amount: toAmount(payment.amount),
+    settledAmount: toAmount(payment.settledAmount),
+    status: payment.status,
+    note: payment.note,
+    requestedAt: payment.requestedAt.toISOString(),
+    verifiedAt: payment.verifiedAt ? payment.verifiedAt.toISOString() : null,
+  };
 }
 
 function toPaymentResponse(payment: PaymentRow): PaymentResponse {

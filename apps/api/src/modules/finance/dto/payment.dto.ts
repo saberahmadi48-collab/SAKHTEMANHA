@@ -45,6 +45,10 @@ import {
  * refused — refusing it is how a system teaches its users to write the amount
  * on a sticky note instead.
  */
+export const SUPPORTED_PAYMENT_PROVIDERS = ['AP', '724'] as const;
+export type SupportedPaymentProvider =
+  (typeof SUPPORTED_PAYMENT_PROVIDERS)[number];
+
 export class RecordManualPaymentDto {
   @ApiProperty({ description: 'شناسه واحد پرداخت‌کننده' })
   @IsUUID()
@@ -107,6 +111,56 @@ export class RecordManualPaymentDto {
  * ledger entry so both the money and its undoing stay visible — §70: Deleted
  * Transaction ≠ Correction.
  */
+export class CreateProviderPaymentIntentDto {
+  @ApiProperty({
+    description: 'درگاه پرداخت انتخابی',
+    enum: SUPPORTED_PAYMENT_PROVIDERS,
+  })
+  @IsEnum(SUPPORTED_PAYMENT_PROVIDERS)
+  provider!: SupportedPaymentProvider;
+
+  @ApiProperty({ description: 'شناسه واحد پرداخت‌کننده' })
+  @IsUUID()
+  unitId!: string;
+
+  @ApiProperty({ description: 'صورت‌حساب هدف' })
+  @IsUUID()
+  invoiceId!: string;
+
+  @ApiProperty({ description: 'کلید یک‌بار مصرف برای جلوگیری از تکرار' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  idempotencyKey!: string;
+
+  @ApiPropertyOptional({ description: 'یادداشت' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class VerifyProviderPaymentIntentDto {
+  @ApiProperty({
+    description: 'درگاه پرداخت انتخابی',
+    enum: SUPPORTED_PAYMENT_PROVIDERS,
+  })
+  @IsEnum(SUPPORTED_PAYMENT_PROVIDERS)
+  provider!: SupportedPaymentProvider;
+
+  @ApiProperty({ description: 'کلید یک‌بار مصرف ثبت‌شده هنگام ایجاد intent' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  idempotencyKey!: string;
+
+  @ApiProperty({ description: 'شناسه تراکنش واقعی ارائه‌دهنده' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  providerTransactionId!: string;
+}
+
 export class ReversePaymentDto {
   @ApiProperty({ description: 'دلیل برگشت پرداخت' })
   @IsString()
@@ -201,6 +255,21 @@ export interface PaymentResponse {
   invoiceStatus: string | null;
   /** What the invoice still owes after this payment. */
   invoiceBalance: number | null;
+}
+
+export interface ProviderPaymentIntentResponse {
+  id: string;
+  unitId: string;
+  invoiceId: string | null;
+  financialPeriodId: string;
+  provider: string;
+  providerTransactionId: string | null;
+  amount: number;
+  settledAmount: number;
+  status: string;
+  note: string | null;
+  requestedAt: string;
+  verifiedAt: string | null;
 }
 
 export interface UnitCreditResponse {

@@ -17,10 +17,13 @@ import {
 } from '../../core/authorization/authorization.decorators';
 import { PaymentsService } from './payments.service';
 import {
+  CreateProviderPaymentIntentDto,
   ListPaymentsQueryDto,
   RecordManualPaymentDto,
   ReversePaymentDto,
+  VerifyProviderPaymentIntentDto,
   type PaymentResponse,
+  type ProviderPaymentIntentResponse,
 } from './dto/payment.dto';
 
 /**
@@ -85,6 +88,28 @@ export class PaymentsController {
     @Body() dto: RecordManualPaymentDto,
   ): Promise<PaymentResponse> {
     return this.payments.recordManual(scope, dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYMENT_RECORD)
+  @Post('provider-intents')
+  @ApiOperation({ summary: 'ایجاد intent پرداخت درگاه' })
+  async createProviderIntent(
+    @Param('buildingId') _buildingId: string,
+    @CurrentScope() scope: RequestScope,
+    @Body() dto: CreateProviderPaymentIntentDto,
+  ): Promise<ProviderPaymentIntentResponse> {
+    return this.payments.createProviderIntent(scope, dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYMENT_RECORD)
+  @Post('provider-intents/verify')
+  @ApiOperation({ summary: 'تأیید پرداخت از طریق درگاه' })
+  async verifyProviderIntent(
+    @Param('buildingId') _buildingId: string,
+    @CurrentScope() scope: RequestScope,
+    @Body() dto: VerifyProviderPaymentIntentDto,
+  ): Promise<ProviderPaymentIntentResponse> {
+    return this.payments.verifyProviderIntent(scope, dto);
   }
 
   /** §46 — a bounced cheque or mis-keyed receipt. The row survives as REVERSED. */

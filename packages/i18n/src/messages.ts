@@ -466,6 +466,15 @@ export const ERRORS = {
     'مبلغ پرداخت از مانده قابل پرداخت این صورت‌حساب بیشتر است',
   paymentNotVerified:
     'پرداخت هنوز توسط درگاه تأیید نشده است و در دفتر کل ثبت نمی‌شود',
+  paymentProviderUnsupported: 'درگاه پرداخت انتخابی پشتیبانی نمی‌شود',
+  paymentIntentIdempotencyRequired:
+    'برای ایجاد intent پرداخت باید کلید یک‌بار مصرف معتبر ارائه شود',
+  paymentAmountMismatch:
+    'مبلغ تأییدشده توسط درگاه با مبلغ مورد انتظار این پرداخت یکسان نیست',
+  paymentCurrencyMismatch:
+    'واحد پول تأییدشده توسط درگاه با واحد پول این پرداخت هم‌خوان نیست',
+  paymentTransactionUnknown:
+    'شناسه تراکنش درخواست‌شده توسط درگاه در سامانه ثبت نشده است',
   paymentAlreadyVerified: 'این پرداخت پیش‌تر تأیید شده است',
   duplicateProviderTransaction:
     'این شناسه تراکنش پیش‌تر ثبت شده است و دوباره اعمال نمی‌شود',

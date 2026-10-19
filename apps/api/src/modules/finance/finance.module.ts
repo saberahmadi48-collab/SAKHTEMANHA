@@ -18,6 +18,10 @@ import { IncomesController } from './incomes.controller';
 import { IncomesService } from './incomes.service';
 import { InvoicesController } from './invoices.controller';
 import { InvoicesService } from './invoices.service';
+import {
+  PAYMENT_PROVIDER_ADAPTER,
+  TestPaymentProviderAdapter,
+} from './payment-provider.adapter';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 
@@ -89,6 +93,8 @@ import { PaymentsService } from './payments.service';
     ChargeGenerationService,
     InvoicesService,
     PaymentsService,
+    TestPaymentProviderAdapter,
+    { provide: PAYMENT_PROVIDER_ADAPTER, useClass: TestPaymentProviderAdapter },
     CreditsService,
     FinancialCategoriesService,
     ExpensesService,
@@ -101,6 +107,8 @@ import { PaymentsService } from './payments.service';
     ChargeGenerationService,
     InvoicesService,
     PaymentsService,
+    TestPaymentProviderAdapter,
+    PAYMENT_PROVIDER_ADAPTER,
     CreditsService,
     FinancialCategoriesService,
     ExpensesService,

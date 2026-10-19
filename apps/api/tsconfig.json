@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "incremental": false,
     "outDir": "./dist",
     "rootDir": "./src",
     /* Only local aliases here. `@bops/contracts` resolves through the npm

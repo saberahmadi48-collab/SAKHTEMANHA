@@ -154,6 +154,102 @@ describe('BM-03 payments & settlement', () => {
     return context.prisma.ledgerEntry.count({ where: { unitId } });
   }
 
+  describe('BM-04 provider payment intents', () => {
+    it('creates then verifies a provider-backed payment intent', async () => {
+      const { unitId, invoice } = await issuedInvoice('5000000');
+
+      const created = await request(context.server)
+        .post(`/api/buildings/${buildingId}/payments/provider-intents`)
+        .set(...auth(owner))
+        .send({
+          provider: 'AP',
+          unitId,
+          invoiceId: invoice.id,
+          idempotencyKey: 'ap-intent-1',
+        })
+        .expect(201);
+
+      expect(created.body.provider).toBe('AP');
+      expect(created.body.status).toBe('CREATED');
+      expect(created.body.amount).toBe(5000000);
+
+      const verified = await request(context.server)
+        .post(`/api/buildings/${buildingId}/payments/provider-intents/verify`)
+        .set(...auth(owner))
+        .send({
+          provider: 'AP',
+          idempotencyKey: 'ap-intent-1',
+          providerTransactionId: 'ap-txn-123',
+        })
+        .expect(201);
+
+      expect(verified.body.status).toBe('SUCCEEDED');
+      expect(verified.body.settledAmount).toBe(5000000);
+      expect(verified.body.verifiedAt).not.toBeNull();
+
+      const stored = await context.prisma.payment.findUniqueOrThrow({
+        where: { id: created.body.id },
+      });
+      expect(stored.status).toBe('SUCCEEDED');
+      expect(stored.ledgerEntryId).not.toBeNull();
+      expect(stored.providerTransactionId).toBe('ap-txn-123');
+    });
+
+    it('rejects a caller outside the building scope', async () => {
+      const outsider = await registerActor(context.server, 'pay-outsider');
+      const { unitId, invoice } = await issuedInvoice('5000000');
+
+      await request(context.server)
+        .post(`/api/buildings/${buildingId}/payments/provider-intents`)
+        .set(...auth(outsider))
+        .send({
+          provider: 'AP',
+          unitId,
+          invoiceId: invoice.id,
+          idempotencyKey: 'outsider',
+        })
+        .expect(403);
+    });
+
+    it('rejects unsupported providers before the business rule runs', async () => {
+      const { unitId, invoice } = await issuedInvoice('5000000');
+
+      await request(context.server)
+        .post(`/api/buildings/${buildingId}/payments/provider-intents`)
+        .set(...auth(owner))
+        .send({
+          provider: 'PAYPAL',
+          unitId,
+          invoiceId: invoice.id,
+          idempotencyKey: 'bad-provider',
+        })
+        .expect(400);
+    });
+
+    it('refuses a provider-intent for an invoice that is already settled', async () => {
+      const { unitId, invoice } = await issuedInvoice('5000000');
+
+      await pay({
+        unitId,
+        invoiceId: invoice.id,
+        amount: 5000000,
+        method: 'MANUAL_BANK_TRANSFER',
+        reference: unique('ref-paid-'),
+      }).expect(201);
+
+      await request(context.server)
+        .post(`/api/buildings/${buildingId}/payments/provider-intents`)
+        .set(...auth(owner))
+        .send({
+          provider: '724',
+          unitId,
+          invoiceId: invoice.id,
+          idempotencyKey: 'already-paid',
+        })
+        .expect(409);
+    });
+  });
+
   // ------------------------------------------------------- §25 partial pay
 
   describe('§25 — partial payment', () => {
